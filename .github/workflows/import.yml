@@ -1,0 +1,37 @@
+name: Import validated implementation
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/import.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Import approved public source archive
+        env:
+          EXPECTED_SHA: 810277b23c4c103897004f4d67ab873767bd8b398901a0cecf7dec74efe4168a
+        run: |
+          python3 - <<'PYTHON'
+          import os, base64, hashlib, io, zipfile
+          from pathlib import Path
+          raw=base64.b64decode(Path('source-bundle.b64').read_text())
+          assert hashlib.sha256(raw).hexdigest()==os.environ['EXPECTED_SHA']
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              for name in z.namelist():
+                  path=Path(name)
+                  assert not path.is_absolute() and '..' not in path.parts and not name.startswith('.github/')
+                  path.parent.mkdir(parents=True,exist_ok=True)
+                  path.write_bytes(z.read(name))
+          PYTHON
+          git rm source-bundle.b64
+          git add .
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Import validated SimpleDMS desktop implementation'
+          git push origin HEAD:main
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet test SimpleDMS.slnx -c Release
