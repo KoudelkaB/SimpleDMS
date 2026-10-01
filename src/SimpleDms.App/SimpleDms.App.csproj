@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><AssemblyName>SimpleDMS</AssemblyName><ApplicationIcon>../../packaging/icons/SimpleDMS.ico</ApplicationIcon></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.5" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.0.5" />
+    <ProjectReference Include="../SimpleDms.Core/SimpleDms.Core.csproj" />
+    <None Include="../../oauth-client.json" Link="oauth-client.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../oauth-client.json')" />
+    <None Include="../../LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../THIRD_PARTY_NOTICES.md" Link="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

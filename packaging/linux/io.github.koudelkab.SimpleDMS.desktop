@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SimpleDMS
+Comment=Document archive on Google Drive
+Comment[cs]=Evidence a dokumenty archivu na Google Drive
+Exec=SimpleDMS
+Icon=io.github.koudelkab.SimpleDMS
+Terminal=false
+Categories=Office;
+StartupWMClass=SimpleDMS

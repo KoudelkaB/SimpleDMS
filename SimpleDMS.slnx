@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SimpleDms.Core/SimpleDms.Core.csproj" />
+    <Project Path="src/SimpleDms.App/SimpleDms.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/"><Project Path="tests/SimpleDms.Tests/SimpleDms.Tests.csproj" /></Folder>
+</Solution>

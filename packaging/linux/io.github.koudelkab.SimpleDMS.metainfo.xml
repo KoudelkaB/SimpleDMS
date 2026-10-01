@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.koudelkab.SimpleDMS</id>
+  <name>SimpleDMS</name>
+  <summary>A shared document archive with an Excel register and Google Drive</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.koudelkab"><name>Bohdan Koudelka</name></developer>
+  <description>
+    <p>Search a shared archive, add documents, maintain stable paper identifiers and print labels on partially used sheets.</p>
+    <p>Supports Google sign-in, offline reading and compatible XLSX metadata. A Google OAuth desktop client must be configured by the publisher or archive administrator.</p>
+  </description>
+  <launchable type="desktop-id">io.github.koudelkab.SimpleDMS.desktop</launchable>
+  <url type="homepage">https://github.com/KoudelkaB/SimpleDMS</url>
+  <url type="bugtracker">https://github.com/KoudelkaB/SimpleDMS/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases/>
+</component>

@@ -1,0 +1,27 @@
+# Soukromé pracovní kopie dokumentů a registru.
+/data/reference/
+# Interní zadání obsahuje odkazy a údaje konkrétního archivu.
+/docs/architecture.md
+/docs/document-archive-design.canvas.tsx
+/oauth-client.json
+
+# Místní stav aplikace, přihlášení a synchronizace.
+/.local/
+/offline/
+/backups/
+*.credentials.json
+*.tokens.json
+*.canvas.data.json
+
+# Výstupy nástrojů a budoucí .NET aplikace.
+__pycache__/
+*.pyc
+bin/
+obj/
+TestResults/
+.vs/
+/publish/
+/dist/
+/_flatpak_build/
+/_flatpak_repo/
+/packaging/flatpak/staging/

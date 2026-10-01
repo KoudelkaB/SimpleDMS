@@ -1,0 +1,40 @@
+app-id: io.github.koudelkab.SimpleDMS
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: SimpleDMS
+finish-args:
+  - --share=ipc
+  - --socket=x11
+  - --device=dri
+  - --share=network
+  # Local Drive mirrors and managed offline archives can be anywhere in the home directory.
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: libsecret
+    buildsystem: meson
+    config-opts:
+      - -Dgtk_doc=false
+      - -Dintrospection=false
+      - -Dvapi=false
+      - -Dmanpage=false
+      - -Dtest_setup=disabled
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/libsecret/0.21/libsecret-0.21.8.2.tar.xz
+        sha256: 142948339c5b971d8f6a8c7099521f6fd319b6fe73d2694b4e6d3310ed28b6e6
+  - name: simpledms
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/simpledms
+      - cp -r publish/. /app/lib/simpledms/
+      - chmod +x /app/lib/simpledms/SimpleDMS
+      - install -d /app/bin
+      - ln -s /app/lib/simpledms/SimpleDMS /app/bin/SimpleDMS
+      - install -Dm644 io.github.koudelkab.SimpleDMS.desktop /app/share/applications/io.github.koudelkab.SimpleDMS.desktop
+      - install -Dm644 io.github.koudelkab.SimpleDMS.metainfo.xml /app/share/metainfo/io.github.koudelkab.SimpleDMS.metainfo.xml
+      - for s in 16 32 48 64 128 256; do install -Dm644 "icons/${s}x${s}/io.github.koudelkab.SimpleDMS.png" "/app/share/icons/hicolor/${s}x${s}/apps/io.github.koudelkab.SimpleDMS.png"; done
+    sources:
+      - type: dir
+        path: staging
