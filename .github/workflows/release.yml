@@ -1,0 +1,226 @@
+name: Release
+
+# Spustí se po pushnutí tagu verze (např. v0.1.0) a sestaví:
+#   - Windows Inno Setup instalátor,
+#   - Linux Flatpak bundle,
+#   - přenosné archivy (zip / tar.gz),
+# a vytvoří GitHub Release se všemi artefakty + SHA256SUMS.
+#
+# Lze spustit i ručně (workflow_dispatch) pro zkušební build bez vytvoření Release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Verze pro zkušební build (bez tagu), např. 0.1.0'
+        required: false
+        default: '0.0.0-dev'
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  APP_ID: io.github.koudelkab.SimpleDMS
+  APP_PROJECT: src/SimpleDms.App/SimpleDms.App.csproj
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release_date: ${{ steps.v.outputs.release_date }}
+    steps:
+      # Plná historie + tagy jsou nutné, aby MinVer odvodil verzi z git tagu.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          # Ruční zkušební build může verzi zadat vstupem; jinak ji generuje MinVer z git tagu.
+          INPUT="${INPUT_VERSION}"
+          if [[ -n "${INPUT}" && "${INPUT}" != "0.0.0-dev" ]]; then
+            VER="${INPUT}"
+          else
+            dotnet tool install --global minver-cli --version 7.0.0
+            export PATH="${PATH}:${HOME}/.dotnet/tools"
+            VER="$(minver --tag-prefix v)"
+          fi
+          [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]] || { echo "Neplatná verze"; exit 1; }
+          RELEASE_DATE="$(git log -1 --format=%cs "${GITHUB_SHA}")"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "release_date=${RELEASE_DATE}" >> "$GITHUB_OUTPUT"
+          echo "Verze: ${VER}, datum vydání: ${RELEASE_DATE}"
+
+  test:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - run: dotnet test SimpleDMS.slnx -c Release
+
+  windows:
+    needs: [version, test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Prepare publisher OAuth configuration
+        shell: pwsh
+        env:
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: ./packaging/configure-oauth.ps1
+
+      - name: Publish (win-x64, self-contained)
+        shell: bash
+        run: |
+          # Verzi dodáváme z version jobu; MinVer se pro tento build přeskočí (shallow checkout).
+          dotnet publish "${APP_PROJECT}" \
+            -c Release -r win-x64 --self-contained true \
+            -p:Version=${{ needs.version.outputs.version }} -p:MinVerSkip=true \
+            -p:PublishSingleFile=false \
+            -o publish/win-x64
+
+      - name: Build Inno Setup installer
+        shell: bash
+        run: |
+          # Inno řeší relativní cesty v [Files] vůči adresáři skriptu, proto absolutní cesta.
+          iscc //DAppVersion=${{ needs.version.outputs.version }} \
+               //DSourceDir="${GITHUB_WORKSPACE}\\publish\\win-x64" \
+               packaging/windows/SimpleDMS.iss
+
+      - name: Portable zip
+        shell: bash
+        run: |
+          mkdir -p dist
+          cd publish/win-x64
+          7z a -tzip "../../dist/SimpleDMS-${{ needs.version.outputs.version }}-win-x64-portable.zip" "*" >/dev/null
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Prepare publisher OAuth configuration
+        shell: pwsh
+        env:
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: ./packaging/configure-oauth.ps1
+
+      - name: Publish (linux-x64, self-contained)
+        shell: bash
+        run: |
+          # Verzi dodáváme z version jobu; MinVer se pro tento build přeskočí (shallow checkout).
+          dotnet publish "${APP_PROJECT}" \
+            -c Release -r linux-x64 --self-contained true \
+            -p:Version=${{ needs.version.outputs.version }} -p:MinVerSkip=true \
+            -p:PublishSingleFile=false \
+            -o publish/linux-x64
+
+      - name: Portable tar.gz
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -czf "dist/SimpleDMS-${{ needs.version.outputs.version }}-linux-x64-portable.tar.gz" \
+            -C publish/linux-x64 .
+
+      - name: Assemble Flatpak staging
+        shell: bash
+        run: |
+          STAGE=packaging/flatpak/staging
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/publish"
+          cp -r publish/linux-x64/. "$STAGE/publish/"
+          cp packaging/linux/${APP_ID}.desktop "$STAGE/"
+          cp packaging/linux/${APP_ID}.metainfo.xml "$STAGE/"
+          cp -r packaging/icons "$STAGE/icons"
+          # GNOME Software odvozuje z AppStreamu zobrazenou verzi i dostupnost
+          # aktualizace. Pokud kurátorovaný záznam chybí, vložíme alespoň
+          # generický, aby metadata nikdy nezůstala na staré verzi.
+          python3 packaging/linux/sync-metainfo-release.py \
+            "$STAGE/${APP_ID}.metainfo.xml" \
+            "${{ needs.version.outputs.version }}" \
+            "${{ needs.version.outputs.release_date }}"
+
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
+
+      - name: Build Flatpak bundle
+        shell: bash
+        run: |
+          mkdir -p dist
+          flatpak-builder --user --disable-rofiles-fuse --force-clean \
+            --repo=_flatpak_repo _flatpak_build \
+            packaging/flatpak/${APP_ID}.yaml
+          flatpak build-bundle _flatpak_repo \
+            "dist/SimpleDMS-${{ needs.version.outputs.version }}.flatpak" \
+            ${APP_ID} --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, test, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Collect artifacts + checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          echo "Obsah dist/:"; ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: SimpleDMS ${{ needs.version.outputs.version }}
+          tag_name: v${{ needs.version.outputs.version }}
+          draft: true
+          generate_release_notes: true
+          files: dist/*
+
