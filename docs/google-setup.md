@@ -5,6 +5,20 @@ OAuth klienta pro distribuovanou aplikaci; uživatel pak vloží adresu archivu,
 přihlásí se svým Google účtem a potvrdí přístup. Práva k souborům určuje sdílení
 na Drive, nikoli znalost OAuth klienta.
 
+Google scopes `drive` a `drive.readonly` se vztahují na všechny soubory dostupné
+účtu. Google nevynucuje omezení na zadanou složku. SimpleDMS je vynucuje
+ve vrstvě `ArchiveDriveClient`: všechny operace procházejí kontrolou příslušnosti
+ke zvolenému rootu, zápisy kontrolují také režim čtení. Neznámá ID se hledají
+procházením obsahu archivu, nikoli načítáním cizích položek z odkazů v XLSX.
+Zástupci nejsou následováni a odkaz otevřený aplikací musí patřit do složky
+dokumentů. Před operací se znovu kontroluje řetězec rodičů, takže přesunutá
+položka způsobí zastavení. Drive neposkytuje atomickou operaci „proveď jen pokud
+je stále potomkem rootu“; souběžný přesun mezi kontrolou a požadavkem nelze
+zcela vyloučit. Toto je ochrana v aplikaci, nikoli užší OAuth oprávnění.
+
+Oficiální balíčky stahujte z repozitáře `KoudelkaB/SimpleDMS`. Stejný OAuth
+Client ID v jiném programu nepotvrzuje jeho původ ani dodržování této ochrany.
+
 1. V [Google Cloud Console](https://console.cloud.google.com/) vytvořte nebo
    vyberte projekt a zapněte **Google Drive API**.
 2. V **Google Auth Platform** nastavte Branding (název SimpleDMS, kontaktní

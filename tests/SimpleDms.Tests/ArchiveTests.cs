@@ -11,17 +11,18 @@ public sealed class FakeDrive : IDriveClient
     readonly Dictionary<string, string> operations = [];
     public bool FailNextReplace, ChangeDuringUpload;
     public int FolderCreations, Uploads;
+    public List<string> MetadataReads = [], Downloads = [], Listings = [], Replacements = [], Moves = [];
     public FakeDrive() { Items["root"] = new("root", "Archiv", "application/vnd.google-apps.folder", "1", "", [], true, true); Items["docs"] = new("docs", "Archiv", "application/vnd.google-apps.folder", "1", "", ["root"], true, true); Items["book"] = new("book", "Archiv.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "1", "", ["root"], true, false); Data["book"] = WorkbookCatalog.Create(); }
-    public Task<DriveItem> GetAsync(string id, CancellationToken ct = default) => Task.FromResult(Items[id]);
-    public Task<IReadOnlyList<DriveItem>> ListAsync(string parent, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<DriveItem>>(Items.Values.Where(x => x.Parents.Contains(parent)).ToList());
-    public Task<byte[]> DownloadAsync(string id, CancellationToken ct = default) => Task.FromResult(Data[id]);
+    public Task<DriveItem> GetAsync(string id, CancellationToken ct = default) { MetadataReads.Add(id); return Task.FromResult(Items[id]); }
+    public Task<IReadOnlyList<DriveItem>> ListAsync(string parent, CancellationToken ct = default) { Listings.Add(parent); return Task.FromResult<IReadOnlyList<DriveItem>>(Items.Values.Where(x => x.Parents.Contains(parent)).ToList()); }
+    public Task<byte[]> DownloadAsync(string id, CancellationToken ct = default) { Downloads.Add(id); return Task.FromResult(Data[id]); }
     public Task<DriveItem> CreateFolderAsync(string parent, string name, string operation, CancellationToken ct = default)
     { if (operations.TryGetValue(operation, out var id)) return GetAsync(id, ct); id = Guid.NewGuid().ToString("N"); var item = new DriveItem(id, name, "application/vnd.google-apps.folder", "1", "", [parent], true, true); Items[id] = item; operations[operation] = id; FolderCreations++; return Task.FromResult(item); }
     public Task<DriveItem> UploadAsync(string parent, string name, byte[] bytes, string mime, string operation, CancellationToken ct = default)
     { if (operations.TryGetValue(operation, out var id)) return GetAsync(id, ct); id = Guid.NewGuid().ToString("N"); var item = new DriveItem(id, name, mime, "1", Convert.ToHexString(MD5.HashData(bytes)), [parent], true, false); Items[id] = item; Data[id] = bytes; operations[operation] = id; Uploads++; if (ChangeDuringUpload) { Items["book"] = Items["book"] with { Version = "2" }; ChangeDuringUpload = false; } return Task.FromResult(item); }
     public Task<DriveItem> ReplaceAsync(string id, byte[] bytes, CancellationToken ct = default)
-    { if (FailNextReplace) { FailNextReplace = false; throw new IOException("Výpadek sítě"); } Data[id] = bytes; Items[id] = Items[id] with { Version = (int.Parse(Items[id].Version) + 1).ToString() }; return GetAsync(id, ct); }
-    public Task<DriveItem> MoveAsync(string id, string parent, CancellationToken ct = default) { Items[id] = Items[id] with { Parents = [parent] }; return GetAsync(id, ct); }
+    { Replacements.Add(id); if (FailNextReplace) { FailNextReplace = false; throw new IOException("Výpadek sítě"); } Data[id] = bytes; Items[id] = Items[id] with { Version = (int.Parse(Items[id].Version) + 1).ToString() }; return GetAsync(id, ct); }
+    public Task<DriveItem> MoveAsync(string id, string parent, CancellationToken ct = default) { Moves.Add(id); Items[id] = Items[id] with { Parents = [parent] }; return GetAsync(id, ct); }
 }
 public sealed class ArchiveTests
 {

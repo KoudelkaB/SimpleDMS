@@ -31,6 +31,12 @@ vyžadují internet; offline je dostupné čtení připravené kopie.
 
 ## Vývoj
 
+Ve VS Code otevřete kořenovou složku projektu a stiskněte F5 (konfigurace
+`SimpleDMS`). Je potřeba .NET 10 SDK a rozšíření Microsoft C#.
+F5 aplikaci nejprve sestaví v režimu Debug. Pro Google přihlášení se použije
+místní `oauth-client.json` v kořeni projektu, který se nekopíruje do Gitu;
+nový klon repozitáře jej musí dodat nebo importovat klienta v Nastavení.
+
 ```sh
 dotnet restore SimpleDMS.slnx
 dotnet build SimpleDMS.slnx -c Release

@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SimpleDMS",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build SimpleDMS (Debug)",
+      "program": "${workspaceFolder}/src/SimpleDms.App/bin/Debug/net10.0/SimpleDMS.dll",
+      "cwd": "${workspaceFolder}",
+      "args": [],
+      "console": "internalConsole",
+      "stopAtEntry": false
+    }
+  ]
+}

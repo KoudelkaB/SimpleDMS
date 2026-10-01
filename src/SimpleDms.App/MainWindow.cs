@@ -71,7 +71,8 @@ public sealed class MainWindow : Window
         var header = Stack(archiveTitle, mode); header.Margin = new(0, 0, 0, 14); DockPanel.SetDock(header, Dock.Top); body.Children.Add(header);
         var bottom = Stack(status, Row(Action("Zrušit probíhající operaci", () => { operation?.Cancel(); return Task.CompletedTask; }))); bottom.Margin = new(0, 12, 0, 0); DockPanel.SetDock(bottom, Dock.Bottom); body.Children.Add(bottom);
         body.Children.Add(tabs); Content = body;
-        var archivePanel = Stack(Heading("Otevřít archiv Google Drive"), Text("Vložte odkaz na root složku. Přihlaste se vlastním účtem Google; nalezená evidence se otevře automaticky."), rootUrl,
+        var archivePanel = Stack(Heading("Otevřít archiv Google Drive"), Text("Vložte odkaz na root složku. Přihlaste se vlastním účtem Google; nalezená evidence se otevře automaticky."),
+            Text("Google uděluje oprávnění k celému Drive účtu. SimpleDMS omezuje práci na vybranou složku archivu a její obsah; toto omezení zajišťuje aplikace."), rootUrl,
             Row(Action("Přihlásit Google a otevřít archiv", ConnectAsync), Action("Aktualizovat", RefreshAsync)),
             archiveChoices, Action("Otevřít vybraný archiv", OpenChosenAsync), archiveName, Action("Založit nový archiv", () => { archiveChoices.SelectedIndex = -1; return OpenChosenAsync(); }), Heading("Offline kopie"), localRootText,
             Row(Action("Připojit synchronizovanou složku", () => ChooseLocalAsync(false)), Action("Vytvořit offline kopii", () => ChooseLocalAsync(true))),
@@ -219,7 +220,7 @@ public sealed class MainWindow : Window
         if (online) { await OpenDriveAsync(); return; }
         throw new InvalidOperationException(r.Electronic ? "Příloha zatím není připravena offline. Aktualizujte místní kopii." : "Dokument existuje pouze v papírovém archivu.");
     }
-    Task OpenDriveAsync() { RequireOnline(); var r = Selected(); if (r.DriveId.Length > 0) GoogleAuth.OpenBrowser("https://drive.google.com/open?id=" + Uri.EscapeDataString(r.DriveId)); else if (Uri.TryCreate(r.DriveUrl, UriKind.Absolute, out var url) && url.Host == "drive.google.com" && url.Scheme == "https") GoogleAuth.OpenBrowser(url.AbsoluteUri); else throw new InvalidOperationException("Dokument nemá odkaz na Drive."); return Task.CompletedTask; }
+    async Task OpenDriveAsync() { RequireOnline(); GoogleAuth.OpenBrowser(await service.DocumentUrlAsync(Profile(), Selected(), Token)); }
     void Queue(DocumentRecord record) { settings.LabelQueue.Add(new(record.Code, record.Title, record.DriveUrl, record.DriveId)); Save(); UpdateLabels(); }
     Task QueueSelectedAsync() { Queue(Selected()); status.Text = "Štítek přidán do fronty."; return Task.CompletedTask; }
     Task RemoveLabelAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); if (queueList.SelectedItem is LabelItem item) settings.LabelQueue.Remove(item); Save(); UpdateLabels(); return Task.CompletedTask; }

@@ -30,11 +30,12 @@ public sealed class SyncManifest
     public DateTimeOffset? CompletedAt { get; set; }
     public List<string> Errors { get; set; } = [];
 }
-public sealed class ArchiveService(IDriveClient drive, LocalStore store)
+public sealed class ArchiveService(IDriveClient client, LocalStore store)
 {
     readonly SemaphoreSlim writer = new(1, 1);
     public async Task<IReadOnlyList<ArchiveChoice>> DiscoverAsync(string root, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, root, false);
         if (!(await drive.GetAsync(root, ct)).IsFolder) throw new InvalidOperationException("Odkaz musí určovat složku.");
         var children = await drive.ListAsync(root, ct);
         var workbooks = children.Where(x => x.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) && !x.IsFolder).ToList();
@@ -53,6 +54,7 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     public async Task<ArchiveProfile> OpenAsync(string root, ArchiveChoice choice, string account, string email, bool readOnly, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, root, !readOnly);
         var parent = await drive.GetAsync(root, ct);
         if (!parent.IsFolder) throw new InvalidOperationException("Kořen archivu musí být složka.");
         if (string.IsNullOrWhiteSpace(choice.Name) || choice.Name != ArchivePaths.SafeName(choice.Name)) throw new InvalidOperationException("Název nového archivu obsahuje nepovolené znaky.");
@@ -93,15 +95,17 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     public async Task<(ArchiveProfile Profile, WorkbookCatalog Catalog)> RefreshAsync(ArchiveProfile p, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         var book = await drive.GetAsync(p.WorkbookId, ct); var folder = await drive.GetAsync(p.DocumentsId, ct);
         if (!book.Parents.Contains(p.RootId) || !folder.Parents.Contains(p.RootId) || !folder.IsFolder) throw new InvalidOperationException("Registr nebo složka už nepatří do zvoleného rootu.");
         var bytes = await drive.DownloadAsync(p.WorkbookId, ct); var catalog = new WorkbookCatalog(bytes);
-        p = p with { Name = book.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? book.Name[..^5] : p.Name, DocumentsName = folder.Name, CanWrite = book.CanEdit && folder.CanAddChildren };
+        p = p with { Name = book.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ? book.Name[..^5] : p.Name, DocumentsName = folder.Name, CanWrite = p.CanWrite && book.CanEdit && folder.CanAddChildren };
         await CacheAsync(p, bytes, ct); return (p, catalog);
     }
     public AddJournal? PendingOperation(ArchiveProfile p) => Read<AddJournal>(p, "operation.json") is { Complete: false } journal ? journal : null;
     public async Task<DocumentRecord> AddAsync(ArchiveProfile p, DocumentDraft draft, IEnumerable<string> files, string? existingCode = null, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         if (!p.CanWrite) throw new InvalidOperationException("Archiv je otevřen jen pro čtení.");
         await writer.WaitAsync(ct);
         try
@@ -131,12 +135,15 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     async Task<DocumentRecord> ContinueAdd(ArchiveProfile p, AddJournal journal, CancellationToken ct)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         var book = await drive.GetAsync(p.WorkbookId, ct); if (!book.CanEdit) throw new InvalidOperationException("Nemáte právo změnit XLSX.");
         var original = await drive.DownloadAsync(p.WorkbookId, ct);
         var catalog = new WorkbookCatalog(original);
         if (journal.ExpectedHash.Length > 0 && Convert.ToHexString(SHA256.HashData(original)) == journal.ExpectedHash)
         { journal.Complete = true; Write(p, "operation.json", journal); await CacheAsync(p, original, ct); return catalog.Records.Single(x => x.Code == journal.Code); }
         if (!journal.Attach && catalog.Records.Any(x => x.Code == journal.Code)) throw new InvalidOperationException("Rezervované číslo je již v cloudovém registru. Obnova vyžaduje kontrolu správce.");
+        if (journal.FolderId.Length > 0 && !await BelongsAsync(p, journal.FolderId, ct))
+            throw new InvalidOperationException("Rozpracovaná příloha není v tomto archivu.");
         if (journal.Files.Count > 0)
         {
             var old = journal.Attach ? catalog.Records.Single(x => x.Code == journal.Code) : null;
@@ -206,6 +213,7 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     async Task Publish(ArchiveProfile p, string version, byte[] original, byte[] updated, CancellationToken ct)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         var backup = Path.Combine(store.ArchiveDirectory(p), "backups"); Directory.CreateDirectory(backup);
         await File.WriteAllBytesAsync(Path.Combine(backup, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff") + ".xlsx"), original, ct);
         if ((await drive.GetAsync(p.WorkbookId, ct)).Version != version) throw new InvalidOperationException("Cloudový XLSX se během operace změnil. Vaše rezervace a přílohy jsou uložené; obnovte operaci nad novou verzí.");
@@ -214,6 +222,7 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     public async Task SetPendingAsync(ArchiveProfile p, string code, bool pending, CancellationToken ct = default) => await Edit(p, c => c.SetPending(code, pending), ct);
     async Task Edit(ArchiveProfile p, Action<WorkbookCatalog> mutate, CancellationToken ct)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         if (!p.CanWrite) throw new InvalidOperationException("Archiv je otevřen jen pro čtení.");
         await writer.WaitAsync(ct);
         try
@@ -228,22 +237,66 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     public async Task<bool> BelongsAsync(ArchiveProfile p, string id, CancellationToken ct = default)
     {
-        var queue = new Queue<string>(); queue.Enqueue(id); var seen = new HashSet<string>();
-        while (queue.Count > 0 && seen.Count < 100)
-        { var current = queue.Dequeue(); if (current == p.DocumentsId) return true; if (!seen.Add(current)) continue; foreach (var parent in (await drive.GetAsync(current, ct)).Parents) queue.Enqueue(parent); }
+        // Walk only inside the archive. A forged Q or legacy URL must not cause
+        // metadata reads of personal files or traversal of their parent folders.
+        var drive = new ArchiveDriveClient(client, p.RootId, false);
+        var queue = new Queue<string>(); queue.Enqueue(p.DocumentsId);
+        var seen = new HashSet<string>();
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue(); if (!seen.Add(current)) continue;
+            if (current == id) { await drive.GetAsync(current, ct); return true; }
+            foreach (var child in await drive.ListAsync(current, ct))
+            {
+                if (child.Id == id)
+                {
+                    var item = await drive.GetAsync(child.Id, ct);
+                    return item.MimeType != "application/vnd.google-apps.shortcut";
+                }
+                if (child.IsFolder) queue.Enqueue(child.Id);
+            }
+        }
         return false;
+    }
+    public async Task<string> DocumentUrlAsync(ArchiveProfile p, DocumentRecord record, CancellationToken ct = default)
+    {
+        var id = record.DriveId;
+        if (id.Length == 0 && Uri.TryCreate(record.DriveUrl, UriKind.Absolute, out var url) &&
+            url.Scheme == "https" && url.Host == "drive.google.com")
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(url.AbsoluteUri, @"(?:/d/|/folders/|[?&]id=)([A-Za-z0-9_-]+)");
+            if (match.Success) id = match.Groups[1].Value;
+        }
+        if (id.Length == 0 || !await BelongsAsync(p, id, ct))
+            throw new InvalidOperationException("Odkaz dokumentu nevede do vybraného archivu.");
+        return "https://drive.google.com/open?id=" + Uri.EscapeDataString(id);
     }
     public async Task<int> RepairIdsAsync(ArchiveProfile p, CancellationToken ct = default)
     {
         var catalog = await RefreshAsync(p, ct); var candidates = new Dictionary<string, string>();
-        foreach (var record in catalog.Catalog.Records.Where(r => r.DriveId.Length == 0 && r.Electronic))
+        // Build membership once for all legacy links, rather than walking the
+        // entire tree for every missing Q. No foreign ID is fetched here.
+        var missing = catalog.Catalog.Records.Where(r => r.DriveId.Length == 0 && r.Electronic).ToList();
+        if (missing.Count == 0) return 0;
+        var drive = new ArchiveDriveClient(client, p.RootId, false);
+        var ids = new HashSet<string>(); var folders = new Queue<string>(); folders.Enqueue(p.DocumentsId);
+        while (folders.Count > 0)
+        {
+            var folder = folders.Dequeue(); if (!ids.Add(folder)) continue;
+            foreach (var child in await drive.ListAsync(folder, ct))
+            {
+                if (child.IsFolder) folders.Enqueue(child.Id);
+                else if (child.MimeType != "application/vnd.google-apps.shortcut") ids.Add(child.Id);
+            }
+        }
+        foreach (var record in missing)
         {
             string? id = null;
             var match = System.Text.RegularExpressions.Regex.Match(record.DriveUrl, @"(?:/d/|/folders/|[?&]id=)([A-Za-z0-9_-]+)");
             if (match.Success) id = match.Groups[1].Value;
             if (id != null)
             {
-                try { if (await BelongsAsync(p, id, ct)) candidates[record.Code] = id; }
+                try { if (ids.Contains(id)) { await drive.GetAsync(id, ct); candidates[record.Code] = id; } }
                 catch (DriveException e) when (e.Status is 403 or 404) { /* Deleted or inaccessible legacy links remain for manual correction. */ }
             }
         }
@@ -252,6 +305,7 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     public async Task SynchronizeAsync(ArchiveProfile p, IProgress<string>? progress, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         if (p.LocalRoot == null || !p.ManagedCopy) throw new InvalidOperationException("Vyberte samostatnou složku pro kopii spravovanou SimpleDMS.");
         var manifest = Read<SyncManifest>(p, "manifest.json") ?? new(); manifest.CompletedAt = null; manifest.Errors.Clear();
         Write(p, "manifest.json", manifest);
@@ -306,6 +360,7 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     public async Task IndexLocalAsync(ArchiveProfile p, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         if (p.LocalRoot == null || p.ManagedCopy) return;
         var manifest = new SyncManifest(); var queue = new Queue<(string Id, string Path)>();
         var wanted=LoadOffline(p)?.Records.Where(r=>r.DriveId.Length>0).Select(r=>r.DriveId).ToHashSet();
@@ -333,6 +388,7 @@ public sealed class ArchiveService(IDriveClient drive, LocalStore store)
     }
     public async Task<string?> LocalPathAsync(ArchiveProfile p, DocumentRecord record, bool online, CancellationToken ct = default)
     {
+        var drive = new ArchiveDriveClient(client, p.RootId, p.CanWrite);
         if (p.LocalRoot == null) return null;
         var manifest = Read<SyncManifest>(p, "manifest.json") ?? new();
         if (manifest.Entries.TryGetValue(record.DriveId, out var entry))
