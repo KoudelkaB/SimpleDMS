@@ -54,6 +54,16 @@ public sealed class CoreTests
         Assert.Equal(2, new WorkbookCatalog(result).Records.Count);
     }
     [Fact]
+    public void ReplacingLastHyperlinkDropsEmptyHyperlinksElement()
+    {
+        XNamespace s = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "První"), "", "", "");
+        var bytes = Modify(c.Save(), "xl/worksheets/sheet1.xml", xml => xml.Root!.Add(new XElement(s + "hyperlinks", new XElement(s + "hyperlink", new XAttribute("ref", "M2")))));
+        c = new(bytes); c.SetAttachments("100001", "100001_Prvni", "https://drive.google.com/drive/folders/f", "f");
+        var sheet = XDocument.Load(new MemoryStream(Entry(c.Save(), "xl/worksheets/sheet1.xml")));
+        Assert.Empty(sheet.Root!.Elements(s + "hyperlinks"));
+    }
+    [Fact]
     public void LabelBatchSkipsUsedCellsAndContinuesAcrossSheets()
     {
         var profile = new LabelProfile(); var sheet = new LabelSheet { ProfileKey = profile.Key, Start = 5, Used = [0, 1, 2, 3, 4, 7] };

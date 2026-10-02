@@ -69,7 +69,9 @@ public sealed class MainWindow : Window
         Title = "SimpleDMS"; Width = 1180; Height = 840; MinWidth = 800; MinHeight = 600;
         var body = new DockPanel { Margin = new Thickness(20) };
         var header = Stack(archiveTitle, mode); header.Margin = new(0, 0, 0, 14); DockPanel.SetDock(header, Dock.Top); body.Children.Add(header);
-        var bottom = Stack(status, Row(Action("Zrušit probíhající operaci", () => { operation?.Cancel(); return Task.CompletedTask; }))); bottom.Margin = new(0, 12, 0, 0); DockPanel.SetDock(bottom, Dock.Bottom); body.Children.Add(bottom);
+        // Cancel must bypass Run, which ignores clicks while an operation is busy.
+        var cancel = new Button { Content = "Zrušit probíhající operaci" }; cancel.Click += (_, _) => operation?.Cancel();
+        var bottom = Stack(status, Row(cancel)); bottom.Margin = new(0, 12, 0, 0); DockPanel.SetDock(bottom, Dock.Bottom); body.Children.Add(bottom);
         body.Children.Add(tabs); Content = body;
         var archivePanel = Stack(Heading("Otevřít archiv Google Drive"), Text("Vložte odkaz na root složku. Přihlaste se vlastním účtem Google; nalezená evidence se otevře automaticky."),
             Text("Google uděluje oprávnění k celému Drive účtu. SimpleDMS omezuje práci na vybranou složku archivu a její obsah; toto omezení zajišťuje aplikace."), rootUrl,
@@ -117,7 +119,8 @@ public sealed class MainWindow : Window
         if (settings.Archive != null)
         {
             rootUrl.Text = "https://drive.google.com/drive/folders/" + settings.Archive.RootId;
-            catalog = service.LoadOffline(settings.Archive); UpdateArchive(); if (catalog != null) tabs.SelectedIndex = 1;
+            try { catalog = service.LoadOffline(settings.Archive); } catch (Exception e) { status.Text = "Místní evidenci nelze načíst: " + e.Message; }
+            UpdateArchive(); if (catalog != null) tabs.SelectedIndex = 1;
         }
         Opened += async (_, _) => { if (settings.Archive != null && settings.ClientId.Length > 0) await Run(async () => { try { await auth.RestoreAsync(settings.Archive.AccountId, settings.Archive.AccountEmail, Token); online = true; await RefreshAsync(); } catch (Exception) { online = false; UpdateArchive(); status.Text = "Offline režim. Připravená místní evidence je dostupná; přihlášení obnovíte na kartě Archiv."; } }); };
         timer.Tick += async (_, _) => { if (busy || settings.Archive == null) return; await Run(async () => { if (online) await RefreshAsync(); else { catalog = service.LoadOffline(settings.Archive); Filter(); } if (online && settings.Archive.ManagedCopy) await SyncAsync(); }); }; timer.Start();
@@ -229,7 +232,7 @@ public sealed class MainWindow : Window
     {
         if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu.");
         var p = new LabelProfile { Name = profileName.Text ?? "Arch", Qr = includeQr.IsChecked == true }; foreach (var x in dimensions) { var prop = typeof(LabelProfile).GetProperty(x.Key)!; var value = float.Parse((x.Value.Text ?? "").Replace(',', '.'), CultureInfo.InvariantCulture); prop.SetValue(p, prop.PropertyType == typeof(int) ? (object)checked((int)value) : value); }
-        p.Validate(); settings.LabelProfiles[p.Name] = p; settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(x => x.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; Save(); UpdateLabels(); status.Text = "Profil archu uložen. Rozměry ověřte zkušebním tiskem v měřítku 100 %."; return Task.CompletedTask;
+        p.Validate(); settings.LabelProfiles[p.Name] = p; settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(x => x.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; Save(); FillProfile(); UpdateLabels(); status.Text = "Profil archu uložen. Rozměry ověřte zkušebním tiskem v měřítku 100 %."; return Task.CompletedTask;
     }
     Task NewSheetAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); settings.Sheet = new() { ProfileKey = settings.Labels.Key }; Save(); UpdateLabels(); return Task.CompletedTask; }
     void UpdateLabels(bool updateSheets = true)

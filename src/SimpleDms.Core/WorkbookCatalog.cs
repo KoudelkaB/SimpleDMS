@@ -144,7 +144,12 @@ public sealed class WorkbookCatalog
         cell.Elements().Where(e => e.Name == S + "v" || e.Name == S + "f" || e.Name == S + "is").Remove();
         cell.SetAttributeValue("t", "inlineStr");
         cell.AddFirst(new XElement(S + "is", new XElement(S + "t", new XAttribute(XNamespace.Xml + "space", "preserve"), value)));
-        if (col is "M" or "N") sheet.Descendants(S + "hyperlink").Where(x => (string?)x.Attribute("ref") == col + (string)row.Attribute("r")!).Remove();
+        if (col is "M" or "N")
+        {
+            sheet.Descendants(S + "hyperlink").Where(x => (string?)x.Attribute("ref") == col + (string)row.Attribute("r")!).Remove();
+            // An empty <hyperlinks/> violates the schema and Excel reports the file as damaged.
+            sheet.Root!.Elements(S + "hyperlinks").Where(x => !x.HasElements).Remove();
+        }
     }
     public DocumentRecord Append(string code, DocumentDraft draft, string path, string url, string id)
     {

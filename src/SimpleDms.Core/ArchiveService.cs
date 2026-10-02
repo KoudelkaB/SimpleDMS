@@ -395,19 +395,24 @@ public sealed class ArchiveService(IDriveClient client, LocalStore store)
         { var path = ArchivePaths.ResolveLocal(p.LocalRoot, entry.RelativePath); if (File.Exists(path) || Directory.Exists(path)) return path; }
         if (!p.ManagedCopy && online && record.DriveId.Length > 0)
         {
-            var segments = new List<string>(); var current = record.DriveId; var visited = new HashSet<string>();
-            while (current != p.DocumentsId && visited.Add(current) && visited.Count < 100)
+            // A Q pointing outside the archive (moved or deleted item) falls back to the L path below.
+            try
             {
-                var item = await drive.GetAsync(current, ct); segments.Insert(0, item.Name);
-                if (item.Parents.Length != 1) return null; current = item.Parents[0];
+                var segments = new List<string>(); var current = record.DriveId; var visited = new HashSet<string>();
+                while (current != p.DocumentsId && visited.Add(current) && visited.Count < 100)
+                {
+                    var item = await drive.GetAsync(current, ct); segments.Insert(0, item.Name);
+                    if (item.Parents.Length != 1) return null; current = item.Parents[0];
+                }
+                if (current == p.DocumentsId)
+                {
+                    segments.Insert(0, p.DocumentsName ?? p.Name); var relative = string.Join('/', segments);
+                    var path = ArchivePaths.ResolveLocal(p.LocalRoot!, relative);
+                    manifest.Entries[record.DriveId] = new(record.DriveId, relative, "", "", File.Exists(path) || Directory.Exists(path)); Write(p, "manifest.json", manifest);
+                    if (File.Exists(path) || Directory.Exists(path)) return path;
+                }
             }
-            if (current == p.DocumentsId)
-            {
-                segments.Insert(0, p.DocumentsName ?? p.Name); var relative = string.Join('/', segments);
-                var path = ArchivePaths.ResolveLocal(p.LocalRoot!, relative);
-                manifest.Entries[record.DriveId] = new(record.DriveId, relative, "", "", File.Exists(path) || Directory.Exists(path)); Write(p, "manifest.json", manifest);
-                return File.Exists(path) || Directory.Exists(path) ? path : null;
-            }
+            catch (InvalidOperationException) { }
         }
         if (!p.ManagedCopy && record.RelativePath.Length > 0)
         {
