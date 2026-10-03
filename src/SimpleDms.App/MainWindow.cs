@@ -16,133 +16,216 @@ public sealed class MainWindow : Window
 {
     readonly LocalStore store;
     readonly AppSettings settings;
+    readonly ArchiveService service;
     GoogleAuth auth = null!;
-    ArchiveService service = null!;
     WorkbookCatalog? catalog;
-    bool online, busy;
+    bool busy, linking, cached, driveOnline, filling;
+    DateTime stamp;
+    int ticks;
     CancellationTokenSource? operation;
     readonly TextBlock archiveTitle = new() { Text = "SimpleDMS", FontSize = 24, FontWeight = FontWeight.SemiBold };
-    readonly TextBlock mode = new() { Text = "Připojte archiv", FontSize = 13 };
+    readonly TextBlock mode = new() { Text = "Vyberte složku archivu", FontSize = 13, TextWrapping = TextWrapping.Wrap };
     readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap };
     readonly TextBlock details = new() { Text = "Vyberte záznam.", TextWrapping = TextWrapping.Wrap };
     readonly TextBlock counter = new();
-    readonly TextBox rootUrl = new() { PlaceholderText = "https://drive.google.com/drive/folders/…" };
-    readonly TextBox archiveName = new() { PlaceholderText = "Název nového archivu" };
-    readonly ComboBox archiveChoices = new() { MinWidth = 280 };
+    readonly TextBlock syncClient = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeight.SemiBold };
+    readonly TextBox rootPath = new() { PlaceholderText = "Místní složka, ve které leží registr XLSX a složka dokumentů" };
+    readonly TextBox archiveName = new() { PlaceholderText = "Název nového archivu", Width = 300 };
+    readonly ComboBox archiveChoices = new() { MinWidth = 300, PlaceholderText = "Nalezené archivy" };
+    readonly TextBox driveUrl = new() { PlaceholderText = "https://drive.google.com/drive/folders/… (složka, ve které leží registr)" };
+    readonly TextBlock driveStatus = new() { TextWrapping = TextWrapping.Wrap };
     readonly TextBox query = new() { PlaceholderText = "Číslo, název, autor, poznámky…" };
-    readonly ComboBox category = new() { ItemsSource = new[] { "Všechny kategorie" }, SelectedIndex = 0, MinWidth = 150 };
+    readonly ComboBox category = new() { MinWidth = 260 };
     readonly ComboBox state = new() { ItemsSource = new[] { "Všechny stavy", "Rozpracované", "Dokončené" }, SelectedIndex = 0, MinWidth = 140 };
     readonly ComboBox electronic = new() { ItemsSource = new[] { "Všechny dokumenty", "S elektronickou přílohou", "Pouze papír" }, SelectedIndex = 0, MinWidth = 180 };
     readonly ListBox records = new() { MinHeight = 120 };
-    readonly TextBox newCategory = new() { PlaceholderText = "Kategorie (2 číslice)", Width = 160 };
+    readonly ComboBox newCategory = new() { MinWidth = 360, PlaceholderText = "Vyberte kategorii" };
+    readonly TextBlock nextCode = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new(12, 0, 0, 0) };
     readonly TextBox newTitle = new() { PlaceholderText = "Název dokumentu" };
-    readonly TextBox newAuthor = new() { PlaceholderText = "Autor / účastníci", Width = 300 };
-    readonly TextBox newReference = new() { PlaceholderText = "Reference", Width = 250 };
-    readonly TextBox newValidity = new() { PlaceholderText = "Platnost", Width = 200 };
-    readonly TextBox newNotes = new() { PlaceholderText = "Poznámky a fyzické umístění (skříň / šanon)", AcceptsReturn = true, MinHeight = 80 };
+    readonly AutoCompleteBox newAuthor = new() { PlaceholderText = "Autor / účastníci", FilterMode = AutoCompleteFilterMode.Contains, MinimumPrefixLength = 1 };
+    readonly TextBox newReference = new() { PlaceholderText = "Reference (např. číslo smlouvy)" };
+    readonly CalendarDatePicker newValidity = new() { SelectedDateFormat = CalendarDatePickerFormat.Custom, CustomDateFormatString = "d.M.yyyy", PlaceholderText = "d.M.rrrr", Width = 180, FirstDayOfWeek = DayOfWeek.Monday };
+    readonly TextBox newNotes = new() { PlaceholderText = "Klíčová slova, poznámky a fyzické umístění (skříň / šanon)", AcceptsReturn = true, MinHeight = 70, TextWrapping = TextWrapping.Wrap };
     readonly CheckBox newPending = new() { Content = "Rozpracovaný dokument" };
-    readonly ListBox filesList = new() { MinHeight = 100 };
+    readonly ListBox filesList = new() { MinHeight = 80, MaxHeight = 200 };
     readonly List<string> attachmentPaths = [];
-    readonly ListBox queueList = new() { MinHeight = 100 };
+    readonly ListBox queueList = new() { Height = 220 };
     readonly Grid labelGrid = new();
-    readonly TextBlock sheetStatus = new();
+    readonly TextBlock sheetStatus = new() { TextWrapping = TextWrapping.Wrap };
     readonly Dictionary<string, TextBox> dimensions = [];
     readonly TextBox profileName = new() { PlaceholderText = "Jméno profilu" };
     readonly ComboBox profileChoice = new() { MinWidth = 180 };
     readonly ComboBox sheetChoice = new() { MinWidth = 220 };
     readonly CheckBox includeQr = new() { Content = "QR kód" };
-    readonly TextBox printer = new() { PlaceholderText = "Linux: tiskárna (prázdné = výchozí)" };
+    readonly ComboBox printerChoice = new() { HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "Tiskárna" };
     readonly TextBox clientId = new() { PlaceholderText = "Google OAuth Client ID" };
     readonly TextBox clientSecret = new() { PlaceholderText = "Desktop client secret (z JSON klienta)", PasswordChar = '●' };
-    readonly CheckBox readOnly = new() { Content = "Čtenář: žádat pouze oprávnění číst Drive" };
-    readonly TextBlock localRootText = new() { TextWrapping = TextWrapping.Wrap };
+    readonly CheckBox readOnly = new() { Content = "Pouze čtení: neupravovat registr ani složku dokumentů" };
     readonly TabControl tabs = new();
     readonly Button saveDocument;
-    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMinutes(5) };
+    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(15) };
     public MainWindow() : this(new LocalStore()) { }
     public MainWindow(LocalStore local)
     {
-        store = local; settings = store.Read<AppSettings>("settings.json") ?? new();
+        store = local; settings = store.Read<AppSettings>("settings.json") ?? new(); service = new(store);
+        // Archives of the former Drive API version had no local root; they are selected again as a folder.
+        var migrated = settings.Archive != null && string.IsNullOrEmpty(settings.Archive.Root);
+        if (migrated) settings.Archive = null;
         var shipped = Path.Combine(AppContext.BaseDirectory, "oauth-client.json");
         if (settings.ClientId.Length == 0 && File.Exists(shipped)) ImportOAuth(File.ReadAllText(shipped));
         InitializeServices();
-        Title = "SimpleDMS"; Width = 1180; Height = 840; MinWidth = 800; MinHeight = 600;
+        Title = "SimpleDMS"; Width = 1180; Height = 840; MinWidth = 900; MinHeight = 600;
         var body = new DockPanel { Margin = new Thickness(20) };
         var header = Stack(archiveTitle, mode); header.Margin = new(0, 0, 0, 14); DockPanel.SetDock(header, Dock.Top); body.Children.Add(header);
         // Cancel must bypass Run, which ignores clicks while an operation is busy.
         var cancel = new Button { Content = "Zrušit probíhající operaci" }; cancel.Click += (_, _) => operation?.Cancel();
         var bottom = Stack(status, Row(cancel)); bottom.Margin = new(0, 12, 0, 0); DockPanel.SetDock(bottom, Dock.Bottom); body.Children.Add(bottom);
         body.Children.Add(tabs); Content = body;
-        var archivePanel = Stack(Heading("Otevřít archiv Google Drive"), Text("Vložte odkaz na root složku. Přihlaste se vlastním účtem Google; nalezená evidence se otevře automaticky."),
-            Text("Google uděluje oprávnění k celému Drive účtu. SimpleDMS omezuje práci na vybranou složku archivu a její obsah; toto omezení zajišťuje aplikace."), rootUrl,
-            Row(Action("Přihlásit Google a otevřít archiv", ConnectAsync), Action("Aktualizovat", RefreshAsync)),
-            archiveChoices, Action("Otevřít vybraný archiv", OpenChosenAsync), archiveName, Action("Založit nový archiv", () => { archiveChoices.SelectedIndex = -1; return OpenChosenAsync(); }), Heading("Offline kopie"), localRootText,
-            Row(Action("Připojit synchronizovanou složku", () => ChooseLocalAsync(false)), Action("Vytvořit offline kopii", () => ChooseLocalAsync(true))),
-            Action("Aktualizovat offline kopii", SyncAsync), Text("Připojte místní root s XLSX a složkou dokumentů. Na Linuxu lze použít Insync nebo jednosměrné rclone. Vlastní kopie SimpleDMS se ukládá do samostatné složky."));
+
+        var drive = DetectGoogleDrive();
+        syncClient.Text = OperatingSystem.IsWindows()
+            ? drive != null ? $"Google Drive for desktop je připojen jako {drive}" : "Google Drive for desktop nebyl nalezen."
+            : "Na Linuxu použijte Insync nebo rclone (rclone bisync / rclone mount) se složkou archivu.";
+        var archivePanel = Stack(
+            Heading("1. Synchronizovaná složka"),
+            Text("SimpleDMS pracuje s místní složkou, kterou na pozadí synchronizuje Google Drive for desktop (případně Insync nebo rclone). Úpravy jsou okamžité a fungují i offline. Nahrání na Google Drive obstará synchronizační klient, takže aplikace nepotřebuje přihlášení ke Google."),
+            syncClient,
+            Row(Action("Stáhnout Google Drive for desktop", () => { GoogleAuth.OpenBrowser("https://www.google.com/drive/download/"); return Task.CompletedTask; })),
+            Text("Sdílenou složku archivu nejprve na webu Google Drive přidejte do Můj disk (pravé tlačítko → Uspořádat → Přidat zástupce do Můj disk). Pak se objeví na disku G: ve složce Můj disk. Chcete-li archiv používat i bez internetu, nastavte u složky v Průzkumníku: pravé tlačítko → Offline přístup → Dostupné offline."),
+            Heading("2. Složka archivu"),
+            Text("Vyberte složku, ve které leží registr (např. G:\\Můj disk\\Databáze dokumentů). Pokud v ní je jediný archiv, otevře se automaticky."),
+            Grid2(rootPath, Action("Vybrat složku…", ChooseRootAsync)),
+            Row(archiveChoices, Action("Otevřít vybraný archiv", OpenChosenAsync)),
+            Row(archiveName, Action("Založit nový archiv v této složce", CreateArchiveAsync)),
+            Heading("3. Volitelně: Google ID pro odkazy a QR kódy"),
+            Text("Po propojení aplikace na pozadí doplní do sloupce Q Google ID složek, které synchronizační klient už nahrál. Odkaz ve sloupci M a QR kód na štítku pak vedou přímo na Google Drive. Aplikace žádá jen oprávnění číst názvy a ID souborů."),
+            driveUrl, driveStatus,
+            Row(Action("Přihlásit Google a propojit", LinkDriveAsync), Action("Doplnit Google ID nyní", () => LinkIdsAsync(true)), Action("Zrušit propojení", UnlinkDriveAsync)));
         AddTab("Archiv", archivePanel);
-        var searchPanel = new Grid { RowDefinitions = new("Auto,Auto,*,Auto"), ColumnDefinitions = new("2*,*") };
+
+        var searchPanel = new Grid { RowDefinitions = new("Auto,Auto,*"), ColumnDefinitions = new("2*,*") };
         var filters = Stack(query, Row(category, state, electronic)); Grid.SetColumnSpan(filters, 2); searchPanel.Children.Add(filters);
         Grid.SetRow(counter, 1); Grid.SetColumnSpan(counter, 2); searchPanel.Children.Add(counter);
         Grid.SetRow(records, 2); searchPanel.Children.Add(records);
-        var detailPanel = Stack(Heading("Detail dokumentu"), details, Action("Otevřít přílohy", OpenSelectedAsync), Action("Otevřít na Drive", OpenDriveAsync),
+        var detailPanel = Stack(Heading("Detail dokumentu"), details, Action("Otevřít přílohy", OpenSelectedAsync), Action("Otevřít na Google Drive", OpenDriveAsync),
             Action("Přepnout Rozpracovaný / Dokončený", TogglePendingAsync), Action("Doplnit přílohy ke stejnému číslu", AttachAsync), Action("Přidat štítek do fronty", QueueSelectedAsync));
-        detailPanel.Margin = new(18, 0, 0, 0); Grid.SetRow(detailPanel, 2); Grid.SetColumn(detailPanel, 1); searchPanel.Children.Add(new ScrollViewer { Content = detailPanel, [Grid.RowProperty] = 2, [Grid.ColumnProperty] = 1 });
+        detailPanel.Margin = new(18, 0, 0, 0); searchPanel.Children.Add(new ScrollViewer { Content = detailPanel, [Grid.RowProperty] = 2, [Grid.ColumnProperty] = 1 });
         AddTab("Dokumenty", searchPanel, false);
+
         saveDocument = Action("Uložit dokument a připravit štítek", SaveDocumentAsync);
-        AddTab("Přidat dokument", Stack(Heading("Nový dokument"), Text("Číslo a Google ID doplní aplikace. Přílohy můžete vybrat hromadně; papírový dokument může být bez příloh."),
-            newCategory, newTitle, Row(newAuthor, newReference, newValidity), newNotes, newPending,
-            Row(Action("Vybrat přílohy", PickAttachmentsAsync), Action("Přidat složku", PickFolderAsync), Action("Vyprázdnit přílohy", () => { attachmentPaths.Clear(); UpdateFiles(); return Task.CompletedTask; })), Text("Soubory nebo složky lze přetáhnout do seznamu příloh. Vnořené složky se zachovají."), filesList, saveDocument,
-            Action("Obnovit přerušené přidávání", ResumeAsync)));
+        saveDocument.Classes.Add("accent");
+        var attachments = Stack(Row(Action("Vybrat soubory", PickAttachmentsAsync), Action("Přidat složku", PickFolderAsync), Action("Vyprázdnit", () => { attachmentPaths.Clear(); UpdateFiles(); return Task.CompletedTask; })),
+            filesList, Text("Soubory nebo složky lze přetáhnout do seznamu. Vnořené složky se zachovají. Papírový dokument může být bez příloh."));
+        AddTab("Přidat dokument", Stack(Heading("Nový dokument"),
+            Form(("Kategorie", Row(newCategory, nextCode)), ("Název", newTitle), ("Autor / účastníci", newAuthor), ("Reference", newReference),
+                ("Platnost", Row(newValidity, Action("Bez data", () => { newValidity.SelectedDate = null; return Task.CompletedTask; }))), ("Poznámky", newNotes), ("", newPending), ("Přílohy", attachments)),
+            saveDocument));
+        newCategory.SelectionChanged += (_, _) => UpdateNextCode();
         DragDrop.SetAllowDrop(filesList, true);
         DragDrop.AddDragOverHandler(filesList, (_, e) => { e.DragEffects = e.DataTransfer.TryGetFiles() != null ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; });
         DragDrop.AddDropHandler(filesList, (_, e) => { foreach (var file in e.DataTransfer.TryGetFiles() ?? []) { var path = file.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); e.Handled = true; });
-        var labelPanel = Stack(Heading("Štítky na arch nálepek"), Text("Pozice se spotřebují až po potvrzení výsledku tisku. Náhled a PDF export samy arch neposouvají."),
-            Row(profileChoice, sheetChoice), profileName);
-        var inputs = new Grid { ColumnDefinitions = new("*,*,*,*"), RowDefinitions = new("Auto,Auto,Auto,Auto") };
+
+        // Queue and print actions stay visible on the left; the sheet layout scrolls on the right.
+        var printPanel = Stack(Heading("Fronta štítků"), queueList, Row(Action("Odebrat vybraný", RemoveLabelAsync), Action("Vyprázdnit frontu", ClearQueueAsync)),
+            Heading("Tisk"), Text("Tiskárna"), Grid2(printerChoice, Action("↻", LoadPrintersAsync)),
+            Row(Action("Tisknout", () => ExportAsync(true)), Action("Náhled PDF", () => ExportAsync(false))),
+            Row(Action("Potvrdit výsledek tisku", ConfirmPrintAsync), Action("Zrušit tiskovou úlohu", CancelPrintAsync)), sheetStatus,
+            Text("Pozice na archu se spotřebují až po potvrzení výsledku tisku. Náhled ani odeslání do tiskárny arch neposouvají. Tiskněte v měřítku 100 %."));
+        printPanel.Margin = new(0, 0, 18, 0);
+        var sheetPanel = Stack(Heading("Arch nálepek"), Row(profileChoice, sheetChoice), profileName);
+        var inputs = new Grid { ColumnDefinitions = new("*,*,*,*"), RowDefinitions = new("Auto,Auto,Auto") };
         var fields = new[] { ("Rows", "Řádky"), ("Columns", "Sloupce"), ("PaperWidth", "Papír šířka mm"), ("PaperHeight", "Papír výška mm"), ("Width", "Nálepka šířka mm"), ("Height", "Nálepka výška mm"), ("Left", "Levý okraj mm"), ("Top", "Horní okraj mm"), ("GapX", "Mezera X mm"), ("GapY", "Mezera Y mm"), ("OffsetX", "Posun X mm"), ("OffsetY", "Posun Y mm") };
         for (var i = 0; i < fields.Length; i++) { var (key, title) = fields[i]; var input = new TextBox(); dimensions[key] = input; var group = Stack(Text(title), input); group.Margin = new(0, 0, 8, 8); Grid.SetRow(group, i / 4); Grid.SetColumn(group, i % 4); inputs.Children.Add(group); }
-        labelPanel.Children.Add(inputs); labelPanel.Children.Add(Row(includeQr, Action("Uložit profil", SaveProfileAsync), Action("Nový arch", NewSheetAsync)));
-        labelPanel.Children.Add(sheetStatus); labelPanel.Children.Add(Text("Kliknutím určíte začátek; zaškrtávátko označuje již použitou nebo chybějící nálepku.")); labelPanel.Children.Add(labelGrid);
-        labelPanel.Children.Add(queueList); labelPanel.Children.Add(Row(Action("Odebrat vybraný štítek", RemoveLabelAsync), Action("Náhled / export PDF", () => ExportAsync(false)), Action("Tisknout", () => ExportAsync(true))));
-        labelPanel.Children.Add(printer); labelPanel.Children.Add(Row(Action("Potvrdit výsledek tisku", ConfirmPrintAsync), Action("Zrušit tiskovou úlohu", CancelPrintAsync))); AddTab("Štítky", labelPanel);
+        sheetPanel.Children.Add(inputs); sheetPanel.Children.Add(Row(includeQr, Action("Uložit profil", SaveProfileAsync), Action("Nový arch", NewSheetAsync)));
+        sheetPanel.Children.Add(Text("Kliknutím určíte začátek; zaškrtávátko označuje již použitou nebo chybějící nálepku.")); sheetPanel.Children.Add(labelGrid);
+        var labelPanel = new Grid { ColumnDefinitions = new("380,*") };
+        labelPanel.Children.Add(new ScrollViewer { Content = printPanel });
+        labelPanel.Children.Add(new ScrollViewer { Content = sheetPanel, [Grid.ColumnProperty] = 1 });
+        AddTab("Štítky", labelPanel, false);
+        printerChoice.SelectionChanged += (_, _) => { if (printerChoice.SelectedItem is string p && p != settings.Printer) { settings.Printer = p; Save(); } };
+
         clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; readOnly.IsChecked = settings.ReadOnly;
-        AddTab("Nastavení", Stack(Heading("Google připojení"), Text("Běžný uživatel používá OAuth klienta dodaného vydavatelem. Toto nastavení slouží pro vlastní sestavení nebo první konfiguraci správce."), clientId, clientSecret, readOnly,
+        readOnly.IsCheckedChanged += (_, _) => { settings.ReadOnly = readOnly.IsChecked == true; Save(); UpdateArchive(); };
+        AddTab("Nastavení", Stack(Heading("Režim"), readOnly,
+            Heading("Google OAuth klient (jen pro volitelné Google ID)"), Text("Běžný uživatel používá OAuth klienta dodaného vydavatelem. Toto nastavení slouží pro vlastní sestavení nebo první konfiguraci správce."), clientId, clientSecret,
             Row(Action("Importovat Google client JSON", ImportOAuthAsync), Action("Uložit nastavení Google", SaveOAuthAsync), Action("Návod pro správce", () => { GoogleAuth.OpenBrowser("https://github.com/KoudelkaB/SimpleDMS/blob/main/docs/google-setup.md"); return Task.CompletedTask; })),
-            Heading("Údržba evidence"), Action("Automaticky doplnit chybějící Google ID v Q", RepairIdsAsync), Action("Otevřít místní zálohy a deník", () => { if (settings.Archive != null) GoogleAuth.OpenBrowser(store.ArchiveDirectory(settings.Archive)); return Task.CompletedTask; }),
-            Text("Jeden aktivní správce upravuje archiv online. Ostatní uživatelé nahlížejí. Při otevřeném Excelu neupravujte stejný registr současně.")));
+            Heading("Údržba"), Action("Otevřít místní zálohy registru", () => { if (settings.Archive != null) GoogleAuth.OpenBrowser(Path.Combine(store.ArchiveDirectory(settings.Archive), "backups")); return Task.CompletedTask; }),
+            Text("Před každou změnou registru se uloží jeho kopie (posledních 50). Google Drive navíc uchovává historii verzí. Registr neupravujte současně v Excelu; když je otevřený, aplikace zápis odmítne.")));
+
         query.TextChanged += (_, _) => Filter(); category.SelectionChanged += (_, _) => Filter(); state.SelectionChanged += (_, _) => Filter(); electronic.SelectionChanged += (_, _) => Filter(); records.SelectionChanged += (_, _) => UpdateDetail();
-        records.ItemTemplate = new FuncDataTemplate<DocumentRecord>((r, _) => { if (r == null) return new TextBlock(); var row = new Grid { ColumnDefinitions = new("80,*,140"), Margin = new Thickness(8, 5) }; row.Children.Add(new TextBlock { Text = r.Code, FontWeight = FontWeight.SemiBold }); row.Children.Add(new TextBlock { Text = r.Title, TextTrimming = TextTrimming.CharacterEllipsis, [Grid.ColumnProperty] = 1 }); row.Children.Add(new TextBlock { Text = r.State, [Grid.ColumnProperty] = 2, Foreground = r.Pending ? Brushes.DarkOrange : null }); return row; });
-        profileChoice.SelectionChanged += (_, _) => { if (profileChoice.SelectedItem is string name && settings.LabelProfiles.TryGetValue(name, out var p) && settings.PendingPrint == null) { settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(s => s.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; FillProfile(); UpdateLabels(); Save(); } };
-        sheetChoice.SelectionChanged += (_, _) => { if (sheetChoice.SelectedItem is SheetOption s && settings.PendingPrint == null) { settings.Sheet = s.Sheet; UpdateLabels(false); Save(); } };
+        records.DoubleTapped += async (_, _) => await Run(OpenSelectedAsync);
+        records.ItemTemplate = new FuncDataTemplate<DocumentRecord>((r, _) =>
+        {
+            if (r == null) return new TextBlock();
+            var row = new Grid { ColumnDefinitions = new("80,*,220,110"), Margin = new Thickness(8, 5) };
+            row.Children.Add(new TextBlock { Text = r.Code, FontWeight = FontWeight.SemiBold });
+            row.Children.Add(new TextBlock { Text = r.Title, TextTrimming = TextTrimming.CharacterEllipsis, [Grid.ColumnProperty] = 1 });
+            row.Children.Add(new TextBlock { Text = CategoryName(r.Category), Opacity = 0.7, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new(8, 0), [Grid.ColumnProperty] = 2 });
+            var stateText = new TextBlock { Text = r.State, [Grid.ColumnProperty] = 3 }; if (r.Pending) stateText.Foreground = Brushes.DarkOrange; row.Children.Add(stateText);
+            return row;
+        });
+        profileChoice.SelectionChanged += (_, _) => { if (!filling && profileChoice.SelectedItem is string name && settings.LabelProfiles.TryGetValue(name, out var p) && settings.PendingPrint == null) { settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(s => s.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; FillProfile(); UpdateLabels(); Save(); } };
+        sheetChoice.SelectionChanged += (_, _) => { if (!filling && sheetChoice.SelectedItem is SheetOption s && settings.PendingPrint == null) { settings.Sheet = s.Sheet; UpdateLabels(false); Save(); } };
         if (settings.LabelProfiles.Count == 0) settings.LabelProfiles[settings.Labels.Name] = settings.Labels;
         FillProfile(); UpdateLabels();
         if (settings.Archive != null)
         {
-            rootUrl.Text = "https://drive.google.com/drive/folders/" + settings.Archive.RootId;
-            try { catalog = service.LoadOffline(settings.Archive); } catch (Exception e) { status.Text = "Místní evidenci nelze načíst: " + e.Message; }
-            UpdateArchive(); if (catalog != null) tabs.SelectedIndex = 1;
+            rootPath.Text = settings.Archive.Root; driveUrl.Text = settings.Archive.DriveRootId is { Length: > 0 } id ? "https://drive.google.com/drive/folders/" + id : "";
+            LoadCatalog(); if (catalog != null) tabs.SelectedIndex = 1;
         }
-        Opened += async (_, _) => { if (settings.Archive != null && settings.ClientId.Length > 0) await Run(async () => { try { await auth.RestoreAsync(settings.Archive.AccountId, settings.Archive.AccountEmail, Token); online = true; await RefreshAsync(); } catch (Exception) { online = false; UpdateArchive(); status.Text = "Offline režim. Připravená místní evidence je dostupná; přihlášení obnovíte na kartě Archiv."; } }); };
-        timer.Tick += async (_, _) => { if (busy || settings.Archive == null) return; await Run(async () => { if (online) await RefreshAsync(); else { catalog = service.LoadOffline(settings.Archive); Filter(); } if (online && settings.Archive.ManagedCopy) await SyncAsync(); }); }; timer.Start();
+        else
+        {
+            if (drive != null) rootPath.Text = Path.Combine(drive, Directory.Exists(Path.Combine(drive, "Můj disk")) ? "Můj disk" : "My Drive");
+            status.Text = migrated ? "SimpleDMS nyní pracuje s místní synchronizovanou složkou. Na kartě Archiv vyberte složku archivu." : "Na kartě Archiv vyberte složku archivu.";
+            UpdateArchive();
+        }
+        Opened += async (_, _) =>
+        {
+            await LoadPrintersAsync();
+            var p = settings.Archive;
+            if (p?.DriveLinked != true || settings.ClientId.Length == 0) return;
+            try { await auth.RestoreAsync(p.AccountId, p.AccountEmail); driveOnline = true; UpdateArchive(); await BackgroundLinkAsync(); }
+            catch (Exception) { driveOnline = false; UpdateArchive(); }
+        };
+        timer.Tick += async (_, _) => await TickAsync(); timer.Start();
         Closed += (_, _) => { timer.Stop(); operation?.Cancel(); };
     }
     sealed record SheetOption(LabelSheet Sheet, int Capacity) { public override string ToString() => "Arch " + Sheet.Id[..6] + $" — {Sheet.Used.Count}/{Capacity}"; }
+    sealed record CategoryOption(string Code, string Name) { public override string ToString() => Name.Length > 0 ? $"{Code} – {Name}" : Code; }
     CancellationToken Token => operation?.Token ?? CancellationToken.None;
     static TextBlock Text(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap };
     static TextBlock Heading(string text) => new() { Text = text, FontSize = 18, FontWeight = FontWeight.SemiBold, Margin = new(0, 12, 0, 4) };
     static StackPanel Stack(params Control[] controls) { var p = new StackPanel { Spacing = 8 }; foreach (var c in controls) p.Children.Add(c); return p; }
     static StackPanel Row(params Control[] controls) { var p = Stack(controls); p.Orientation = Orientation.Horizontal; return p; }
+    // A field that stretches next to a fixed-width button.
+    static Grid Grid2(Control stretch, Control fixedWidth)
+    {
+        var grid = new Grid { ColumnDefinitions = new("*,Auto") }; fixedWidth.Margin = new(8, 0, 0, 0);
+        grid.Children.Add(stretch); Grid.SetColumn(fixedWidth, 1); grid.Children.Add(fixedWidth); return grid;
+    }
+    static Grid Form(params (string Label, Control Field)[] rows)
+    {
+        var grid = new Grid { ColumnDefinitions = new("150,*") };
+        for (var i = 0; i < rows.Length; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
+            var label = new TextBlock { Text = rows[i].Label, VerticalAlignment = VerticalAlignment.Top, Margin = new(0, 10, 12, 4) }; Grid.SetRow(label, i); grid.Children.Add(label);
+            var field = rows[i].Field; field.Margin = new(0, 4); Grid.SetRow(field, i); Grid.SetColumn(field, 1); grid.Children.Add(field);
+        }
+        return grid;
+    }
     Button Action(string title, Func<Task> work) { var b = new Button { Content = title }; b.Click += async (_, _) => await Run(work); return b; }
-    void AddTab(string title, Control content, bool scroll = true) => tabs.Items.Add(new TabItem { Header = title, Content = scroll ? new ScrollViewer { Content = content, Margin = new Thickness(10) } : content });
+    void AddTab(string title, Control content, bool scroll = true) => tabs.Items.Add(new TabItem { Header = title, Content = scroll ? new ScrollViewer { Content = content, Margin = new Thickness(10) } : new Border { Child = content, Margin = new Thickness(10) } });
     async Task Run(Func<Task> work)
     {
         if (busy) return; busy = true; operation = new(); saveDocument.IsEnabled = false;
         try { await work(); }
-        catch (OperationCanceledException) { status.Text = "Operace přerušena. Rozpracované přidávání lze obnovit."; }
+        catch (OperationCanceledException) { status.Text = "Operace přerušena."; }
         catch (Exception e) { status.Text = e.Message; }
-        finally { busy = false; operation.Dispose(); operation = null; saveDocument.IsEnabled = online && settings.Archive?.CanWrite == true && !settings.ReadOnly; }
+        finally { busy = false; operation.Dispose(); operation = null; saveDocument.IsEnabled = CanWrite; }
     }
-    void InitializeServices() { auth = new(settings, new OsSecretStore(store)); service = new(new DriveClient(auth), store); }
+    bool CanWrite => settings.Archive != null && catalog != null && !cached && !settings.ReadOnly;
+    void InitializeServices() => auth = new(settings, new OsSecretStore(store));
     void Save()
     {
         if (settings.Archive != null) { settings.ArchiveLabelQueues[settings.Archive.Key] = settings.LabelQueue; settings.ArchivePrintPlans[settings.Archive.Key] = settings.PendingPrint; }
@@ -150,84 +233,210 @@ public sealed class MainWindow : Window
     }
     void SetArchive(ArchiveProfile p)
     {
-        Save(); settings.Archive = p; settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; settings.PendingPrint = settings.ArchivePrintPlans.GetValueOrDefault(p.Key); Save(); UpdateLabels();
+        // Without a previous archive (first start or migration) the current queue carries over.
+        var carry = settings.Archive == null && !settings.ArchiveLabelQueues.ContainsKey(p.Key);
+        Save(); settings.Archive = p;
+        if (!carry) { settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; settings.PendingPrint = settings.ArchivePrintPlans.GetValueOrDefault(p.Key); }
+        Save(); UpdateLabels();
     }
+    static string? DetectGoogleDrive()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        foreach (var drive in DriveInfo.GetDrives())
+            try { if (drive.IsReady && drive.VolumeLabel == "Google Drive") return drive.RootDirectory.FullName; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        return null;
+    }
+    void LoadCatalog()
+    {
+        var p = settings.Archive;
+        if (p == null) { catalog = null; UpdateArchive(); return; }
+        try { (catalog, cached) = service.Load(p); stamp = ArchiveService.Stamp(p); if (cached) status.Text = "Složka archivu není dostupná. Zobrazena poslední načtená kopie registru, úpravy nejsou možné."; }
+        catch (Exception e) { catalog = null; status.Text = e.Message; }
+        UpdateArchive();
+    }
+    async Task TickAsync()
+    {
+        var p = settings.Archive;
+        if (busy || p == null) return;
+        // The sync client replaces the workbook when someone else changes it; reload when it does.
+        var current = await Task.Run(() => ArchiveService.Stamp(p));
+        if (!busy && settings.Archive == p && (current != stamp || cached))
+        {
+            try { var result = await Task.Run(() => service.Load(p)); if (settings.Archive == p) { (catalog, cached) = result; stamp = current; UpdateArchive(); } }
+            catch (Exception) { }
+        }
+        if (++ticks % 20 == 0) await BackgroundLinkAsync();
+    }
+    async Task BackgroundLinkAsync()
+    {
+        if (linking || busy || !driveOnline || settings.Archive?.DriveLinked != true || settings.ReadOnly || cached) return;
+        linking = true;
+        try { var p = settings.Archive; if (await service.LinkDriveIdsAsync(p, new DriveClient(auth)) > 0 && settings.Archive == p) LoadCatalog(); }
+        catch (Exception e) { if (!busy) driveStatus.Text = "Doplnění Google ID se nezdařilo: " + e.Message; }
+        finally { linking = false; }
+    }
+    IReadOnlyList<CategoryOption> Categories()
+    {
+        var known = catalog?.Categories ?? new Dictionary<string, string>();
+        // A new archive without "Kódování dokumentů" still needs some category to start with.
+        return (known.Count > 0 ? known.Keys : Enumerable.Range(0, 100).Select(i => i.ToString("D2", CultureInfo.InvariantCulture)))
+            .Order().Select(code => new CategoryOption(code, known.GetValueOrDefault(code) ?? "")).ToList();
+    }
+    string CategoryName(string code) => catalog?.Categories.GetValueOrDefault(code) is { Length: > 0 } name ? code + " – " + name : code;
     void UpdateArchive()
     {
         var p = settings.Archive; archiveTitle.Text = p?.Name ?? "SimpleDMS"; Title = p == null ? "SimpleDMS" : p.Name + " — SimpleDMS";
-        mode.Text = p == null ? "Připojte archiv" : $"{p.AccountEmail} · {(online ? (!settings.ReadOnly && p.CanWrite ? "Správce online" : "Čtení online") : "Offline čtení")}";
-        localRootText.Text = p?.LocalRoot == null ? "Místní kopie zatím není vybrána." : p.LocalRoot + (p.ManagedCopy ? " · spravuje SimpleDMS" : " · externí synchronizační klient");
-        var selectedCategory = category.SelectedItem as string;
-        var categories = new[] { "Všechny kategorie" }.Concat((catalog?.Categories.Keys ?? Enumerable.Empty<string>()).Order()).ToList();
-        category.ItemsSource = categories; category.SelectedIndex = Math.Max(0, categories.IndexOf(selectedCategory ?? ""));
-        if (newCategory.Text is null or "") newCategory.Text = catalog?.Categories.Keys.Order().FirstOrDefault() ?? "10";
-        Filter();
+        mode.Text = p == null ? "Vyberte složku archivu" : $"{p.Root} · " + (cached ? "složka nedostupná, zobrazena poslední kopie" : settings.ReadOnly ? "pouze čtení" : "úpravy povoleny")
+            + (p.DriveLinked ? $" · Google ID: {p.AccountEmail}" + (driveOnline ? "" : " (přihlášení je třeba obnovit)") : "");
+        driveStatus.Text = p == null ? "Nejprve otevřete archiv." : !p.DriveLinked ? "Google ID se nedoplňují (propojení je volitelné)."
+            : $"Propojeno s účtem {p.AccountEmail}. " + (driveOnline ? "Google ID se doplňují automaticky každých 5 minut." : "Přihlášení vypršelo, použijte Přihlásit Google a propojit.");
+        var options = Categories();
+        var selected = (category.SelectedItem as CategoryOption)?.Code;
+        var filterItems = new List<object> { "Všechny kategorie" }; filterItems.AddRange(options);
+        category.ItemsSource = filterItems; category.SelectedItem = options.FirstOrDefault(x => x.Code == selected) ?? (object)filterItems[0];
+        var chosen = (newCategory.SelectedItem as CategoryOption)?.Code;
+        newCategory.ItemsSource = options; newCategory.SelectedItem = options.FirstOrDefault(x => x.Code == chosen) ?? options.FirstOrDefault();
+        newAuthor.ItemsSource = catalog?.Records.Select(r => r.Author.Trim()).Where(x => x.Length > 0).Distinct().Order().ToList() ?? [];
+        saveDocument.IsEnabled = CanWrite && !busy;
+        UpdateNextCode(); Filter();
+    }
+    void UpdateNextCode()
+    {
+        var p = settings.Archive;
+        var code = p != null && catalog != null && newCategory.SelectedItem is CategoryOption c ? ArchiveService.PreviewCode(catalog, p, c.Code) : "";
+        nextCode.Text = code.Length > 0 ? "Přidělí se číslo " + code : "";
     }
     void Filter()
     {
-        var list = catalog?.Records.Where(r => r.Matches(query.Text ?? "") && (category.SelectedIndex <= 0 || r.Category == (string?)category.SelectedItem) && (state.SelectedIndex <= 0 || r.Pending == (state.SelectedIndex == 1)) && (electronic.SelectedIndex <= 0 || r.Electronic == (electronic.SelectedIndex == 1))).ToList() ?? [];
+        var chosen = (category.SelectedItem as CategoryOption)?.Code;
+        var list = catalog?.Records.Where(r => r.Matches(query.Text ?? "") && (chosen == null || r.Category == chosen) && (state.SelectedIndex <= 0 || r.Pending == (state.SelectedIndex == 1)) && (electronic.SelectedIndex <= 0 || r.Electronic == (electronic.SelectedIndex == 1))).ToList() ?? [];
         var selectedCode = (records.SelectedItem as DocumentRecord)?.Code;
         records.ItemsSource = list; records.SelectedItem = list.FirstOrDefault(x => x.Code == selectedCode); counter.Text = $"{list.Count} z {catalog?.Records.Count ?? 0} dokumentů" + (catalog?.Warnings.Count > 0 ? $" · {catalog.Warnings.Count} upozornění v registru" : "");
-        counter.ToolTipSet(catalog == null ? "" : string.Join('\n', catalog.Warnings));
+        ToolTip.SetTip(counter, catalog == null ? "" : string.Join('\n', catalog.Warnings));
     }
     DocumentRecord Selected() => records.SelectedItem as DocumentRecord ?? throw new InvalidOperationException("Vyberte dokument v seznamu.");
-    ArchiveProfile Profile() => settings.Archive ?? throw new InvalidOperationException("Nejprve připojte archiv.");
-    void RequireOnline() { if (!online) throw new InvalidOperationException("Tato operace potřebuje připojení a přihlášení Google."); }
-    void UpdateDetail() { if (records.SelectedItem is DocumentRecord r) details.Text = $"{r.Code}\n{r.Title}\n\n{r.State}\nAutor: {r.Author}\nReference: {r.Reference}\nPlatnost: {r.Validity}\nElektronická forma: {(r.Electronic ? "ano" : "ne")}\n\n{r.Notes}"; else details.Text = "Vyberte záznam."; }
-    async Task ConnectAsync()
+    ArchiveProfile Profile() => settings.Archive ?? throw new InvalidOperationException("Nejprve otevřete archiv.");
+    void RequireWrite()
     {
-        var root = ArchivePaths.ParseRoot(rootUrl.Text ?? ""); status.Text = "Přihlaste se v prohlížeči…"; await auth.SignInAsync(Token); online = true;
-        var options = await service.DiscoverAsync(root, Token); archiveChoices.ItemsSource = options; archiveChoices.SelectedIndex = options.Count > 0 ? 0 : -1;
-        if (options.Count == 1) { await OpenChosenAsync(); return; }
-        archiveName.Text = (await new DriveClient(auth).GetAsync(root, Token)).Name;
-        status.Text = options.Count == 0 ? "Zadejte název a založte nový archiv." : "Vyberte registr a jeho složku.";
+        Profile();
+        if (settings.ReadOnly) throw new InvalidOperationException("Aplikace je v režimu pouze pro čtení (Nastavení).");
+        if (cached || catalog == null) throw new InvalidOperationException("Složka archivu není dostupná. Zkontrolujte synchronizačního klienta.");
+    }
+    void UpdateDetail()
+    {
+        if (records.SelectedItem is not DocumentRecord r) { details.Text = "Vyberte záznam."; return; }
+        details.Text = $"{r.Code}\n{r.Title}\n\nKategorie: {CategoryName(r.Category)}\n{r.State}\nAutor: {r.Author}\nReference: {r.Reference}\nPlatnost: {r.Validity}\nElektronická forma: {(r.Electronic ? "ano" : "ne")}"
+            + (r.RelativePath.Length > 0 ? $"\nUmístění: {r.RelativePath}" : "") + $"\nGoogle ID: {(r.DriveId.Length > 0 ? r.DriveId : "zatím nedoplněno")}\n\n{r.Notes}";
+    }
+    async Task ChooseRootAsync()
+    {
+        var start = Directory.Exists(rootPath.Text) ? await StorageProvider.TryGetFolderFromPathAsync(rootPath.Text!) : null;
+        var folders = await StorageProvider.OpenFolderPickerAsync(new() { Title = "Složka archivu (obsahuje registr XLSX a složku dokumentů)", AllowMultiple = false, SuggestedStartLocation = start });
+        if (folders.Count == 0) return;
+        rootPath.Text = folders[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní složku.");
+        await DiscoverAsync();
+    }
+    async Task DiscoverAsync()
+    {
+        var root = rootPath.Text?.Trim() ?? "";
+        var options = await Task.Run(() => ArchiveService.Discover(root));
+        archiveChoices.ItemsSource = options; archiveChoices.SelectedIndex = options.Count > 0 ? 0 : -1;
+        if (options.Count == 1 && options[0].Folder != null) { await OpenChosenAsync(); return; }
+        status.Text = options.Count == 0 ? "Ve složce není žádný registr XLSX. Vyberte jinou složku nebo založte nový archiv." : "Vyberte archiv a otevřete jej.";
     }
     async Task OpenChosenAsync()
     {
-        RequireOnline(); var root = ArchivePaths.ParseRoot(rootUrl.Text ?? "");
-        var choice = archiveChoices.SelectedItem as ArchiveChoice ?? new(archiveName.Text ?? "", null, null);
-        var p = await service.OpenAsync(root, choice, auth.AccountId, auth.Email, settings.ReadOnly, Token);
-        if(settings.Archive?.Key==p.Key)p=p with{LocalRoot=settings.Archive.LocalRoot,ManagedCopy=settings.Archive.ManagedCopy};
-        SetArchive(p); catalog = service.LoadOffline(p); UpdateArchive(); tabs.SelectedIndex = 1;
-        if (p.CanWrite && service.PendingOperation(p) == null) { await service.RepairIdsAsync(p, Token); catalog = service.LoadOffline(p); UpdateArchive(); }
-        status.Text = "Archiv otevřen." + (service.PendingOperation(p) != null ? " Je dostupná obnova přerušeného přidávání." : "");
+        var root = rootPath.Text?.Trim() ?? "";
+        if (archiveChoices.SelectedItem is not ArchiveChoice choice) { await DiscoverAsync(); return; }
+        await OpenArchiveAsync(root, choice);
     }
-    async Task RefreshAsync() { RequireOnline(); var result = await service.RefreshAsync(Profile(), Token); settings.Archive = result.Profile with { CanWrite = result.Profile.CanWrite && !settings.ReadOnly }; catalog = result.Catalog; Save(); UpdateArchive(); status.Text = "Evidence aktualizována."; }
-    async Task ChooseLocalAsync(bool managed)
+    Task CreateArchiveAsync()
     {
-        var p = Profile(); var folders = await StorageProvider.OpenFolderPickerAsync(new() { Title = managed ? "Umístění samostatné offline kopie" : "Root synchronizované kopie (XLSX a složka dokumentů)", AllowMultiple = false });
-        if (folders.Count == 0) return; var path = folders[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní adresář.");
-        if (managed) path = Path.Combine(path, "SimpleDMS-" + p.Key);
-        else if (!File.Exists(Path.Combine(path, p.Name + ".xlsx"))) throw new InvalidOperationException("Vybraná složka neobsahuje " + p.Name + ".xlsx. Vyberte její nadřazený root a nastavte dostupnost offline v synchronizačním klientovi.");
-        settings.Archive = p with { LocalRoot = path, ManagedCopy = managed }; Save(); UpdateArchive();
-        if (managed) await SyncAsync(); else { if (online) await service.IndexLocalAsync(Profile(), Token); catalog = service.LoadOffline(Profile()); Filter(); status.Text = "Místní synchronizovaná kopie připojena. Dostupnost offline nastavte také v synchronizačním klientovi."; }
+        var name = archiveName.Text?.Trim() ?? "";
+        if (name.Length == 0) throw new InvalidOperationException("Zadejte název nového archivu.");
+        return OpenArchiveAsync(rootPath.Text?.Trim() ?? "", new(name, null, null));
     }
-    async Task SyncAsync() { RequireOnline(); await service.SynchronizeAsync(Profile(), new Progress<string>(text => status.Text = text), Token); Save(); }
+    async Task OpenArchiveAsync(string root, ArchiveChoice choice)
+    {
+        var p = await Task.Run(() => service.Open(root, choice, !settings.ReadOnly));
+        if (settings.Archive?.Key == p.Key) p = p with { DriveRootId = settings.Archive.DriveRootId, AccountId = settings.Archive.AccountId, AccountEmail = settings.Archive.AccountEmail };
+        else driveOnline = false;
+        SetArchive(p); LoadCatalog(); if (catalog != null) tabs.SelectedIndex = 1;
+        driveUrl.Text = p.DriveRootId is { Length: > 0 } id ? "https://drive.google.com/drive/folders/" + id : "";
+        status.Text = $"Archiv {p.Name} otevřen ({catalog?.Records.Count ?? 0} dokumentů).";
+    }
+    async Task LinkDriveAsync()
+    {
+        var p = Profile(); var rootId = ArchivePaths.ParseRoot(driveUrl.Text ?? "");
+        status.Text = "Přihlaste se v prohlížeči…"; await auth.SignInAsync(Token); driveOnline = true;
+        var name = await ArchiveService.VerifyDriveRootAsync(p, new DriveClient(auth), rootId, Token);
+        settings.Archive = p with { DriveRootId = rootId, AccountId = auth.AccountId, AccountEmail = auth.Email }; Save(); UpdateArchive();
+        status.Text = $"Propojeno se složkou Google Drive „{name}“."; await LinkIdsAsync(true);
+    }
+    async Task LinkIdsAsync(bool report)
+    {
+        var p = Profile();
+        if (!p.DriveLinked) throw new InvalidOperationException("Nejprve propojte archiv s Google Drive.");
+        if (!driveOnline) throw new InvalidOperationException("Přihlášení ke Google vypršelo. Použijte Přihlásit Google a propojit.");
+        RequireWrite();
+        status.Text = "Doplňuji Google ID…";
+        var count = await service.LinkDriveIdsAsync(p, new DriveClient(auth), Token);
+        if (count > 0) LoadCatalog();
+        if (report) status.Text = count > 0 ? $"Doplněno {count} Google ID." : "Nic nového k doplnění. Nově přidané složky se objeví, až je synchronizační klient nahraje.";
+    }
+    Task UnlinkDriveAsync()
+    {
+        var p = Profile(); settings.Archive = p with { DriveRootId = null, AccountId = "", AccountEmail = "" }; driveOnline = false; Save(); UpdateArchive();
+        status.Text = "Propojení s Google Drive zrušeno. Archiv dál funguje přes synchronizovanou složku."; return Task.CompletedTask;
+    }
     async Task PickAttachmentsAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Přílohy dokumentu", AllowMultiple = true }); foreach (var file in files) { var path = file.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); }
     async Task PickFolderAsync() { var folders = await StorageProvider.OpenFolderPickerAsync(new() { Title = "Složka s přílohami", AllowMultiple = true }); foreach (var folder in folders) { var path = folder.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); }
     void UpdateFiles() => filesList.ItemsSource = attachmentPaths.Select(Path.GetFileName).ToList();
+    Progress<string> Progress() => new(text => status.Text = text);
     async Task SaveDocumentAsync()
     {
-        RequireOnline(); if (settings.ReadOnly) throw new InvalidOperationException("Čtenář nemůže přidávat dokumenty.");
-        if (service.PendingOperation(Profile()) != null) throw new InvalidOperationException("Nejprve použijte Obnovit přerušené přidávání.");
+        RequireWrite();
+        var code = (newCategory.SelectedItem as CategoryOption)?.Code ?? throw new InvalidOperationException("Vyberte kategorii.");
+        var draft = new DocumentDraft(code, newTitle.Text?.Trim() ?? "", newReference.Text?.Trim() ?? "", newAuthor.Text?.Trim() ?? "",
+            newValidity.SelectedDate is { } date ? date.ToString("d.M.yyyy", CultureInfo.InvariantCulture) : "", newNotes.Text?.Trim() ?? "", newPending.IsChecked == true);
         status.Text = "Ukládání dokumentu…";
-        var record = await service.AddAsync(Profile(), new(newCategory.Text ?? "", newTitle.Text ?? "", newReference.Text ?? "", newAuthor.Text ?? "", newValidity.Text ?? "", newNotes.Text ?? "", newPending.IsChecked == true), attachmentPaths, ct: Token);
-        Queue(record); attachmentPaths.Clear(); UpdateFiles(); newTitle.Text = ""; newNotes.Text = ""; await RefreshAsync(); status.Text = $"Dokument {record.Code} uložen. Štítek je ve frontě."; tabs.SelectedIndex = 1;
+        var record = await service.AddAsync(Profile(), draft, attachmentPaths, null, Progress(), Token);
+        Queue(record); attachmentPaths.Clear(); UpdateFiles(); newTitle.Text = ""; newReference.Text = ""; newNotes.Text = ""; newValidity.SelectedDate = null; newPending.IsChecked = false;
+        LoadCatalog(); tabs.SelectedIndex = 1; query.Text = ""; records.SelectedItem = (records.ItemsSource as IEnumerable<DocumentRecord>)?.FirstOrDefault(x => x.Code == record.Code);
+        status.Text = $"Dokument {record.Code} uložen. Štítek je ve frontě." + (record.Electronic ? " Přílohy na Google Drive nahraje synchronizační klient." : "");
     }
-    async Task ResumeAsync() { RequireOnline(); var op = service.PendingOperation(Profile()) ?? throw new InvalidOperationException("Žádné přidávání nečeká na obnovu."); var record = await service.AddAsync(Profile(), op.Draft, op.Files, op.Attach ? op.Code : null, Token); Queue(record); await RefreshAsync(); status.Text = "Rozpracované přidávání dokončeno."; }
-    async Task TogglePendingAsync() { RequireOnline(); var record = Selected(); await service.SetPendingAsync(Profile(), record.Code, !record.Pending, Token); await RefreshAsync(); }
-    async Task AttachAsync() { RequireOnline(); var r = Selected(); var picked = await StorageProvider.OpenFilePickerAsync(new() { Title = "Doplnit přílohy k " + r.Code, AllowMultiple = true }); if (picked.Count == 0) return; await service.AddAsync(Profile(), new(r.Category, r.Title, r.Reference, r.Author, r.Validity, r.Notes, r.Pending), picked.Select(x => x.TryGetLocalPath() ?? throw new InvalidOperationException("Příloha není místní.")), r.Code, Token); await RefreshAsync(); }
-    async Task OpenSelectedAsync()
+    async Task TogglePendingAsync() { RequireWrite(); var record = Selected(); await service.SetPendingAsync(Profile(), record.Code, !record.Pending, Token); LoadCatalog(); }
+    async Task AttachAsync()
     {
-        var r = Selected(); var local = await service.LocalPathAsync(Profile(), r, online, Token); if (local != null) { GoogleAuth.OpenBrowser(local); return; }
-        if (online) { await OpenDriveAsync(); return; }
-        throw new InvalidOperationException(r.Electronic ? "Příloha zatím není připravena offline. Aktualizujte místní kopii." : "Dokument existuje pouze v papírovém archivu.");
+        RequireWrite(); var r = Selected();
+        var picked = await StorageProvider.OpenFilePickerAsync(new() { Title = "Doplnit přílohy k " + r.Code, AllowMultiple = true }); if (picked.Count == 0) return;
+        await service.AddAsync(Profile(), new(r.Category, r.Title), picked.Select(x => x.TryGetLocalPath() ?? throw new InvalidOperationException("Příloha není místní.")), r.Code, Progress(), Token);
+        LoadCatalog(); status.Text = $"Přílohy doplněny k dokumentu {r.Code}.";
     }
-    async Task OpenDriveAsync() { RequireOnline(); GoogleAuth.OpenBrowser(await service.DocumentUrlAsync(Profile(), Selected(), Token)); }
+    Task OpenSelectedAsync()
+    {
+        var r = Selected(); var local = service.LocalPath(Profile(), r);
+        if (local != null) { GoogleAuth.OpenBrowser(local); return Task.CompletedTask; }
+        throw new InvalidOperationException(!r.Electronic ? "Dokument existuje pouze v papírovém archivu." : cached ? "Složka archivu není dostupná." : $"Přílohy nebyly ve složce {Profile().DocumentsPath} nalezeny. Zkontrolujte synchronizaci, případně je otevřete na Google Drive.");
+    }
+    Task OpenDriveAsync()
+    {
+        var r = Selected();
+        if (r.DriveUrl.Length == 0) throw new InvalidOperationException("Dokument zatím nemá Google ID. Doplní se po propojení s Google Drive (karta Archiv), až synchronizační klient nahraje přílohy.");
+        GoogleAuth.OpenBrowser(r.DriveUrl); return Task.CompletedTask;
+    }
     void Queue(DocumentRecord record) { settings.LabelQueue.Add(new(record.Code, record.Title, record.DriveUrl, record.DriveId)); Save(); UpdateLabels(); }
     Task QueueSelectedAsync() { Queue(Selected()); status.Text = "Štítek přidán do fronty."; return Task.CompletedTask; }
     Task RemoveLabelAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); if (queueList.SelectedItem is LabelItem item) settings.LabelQueue.Remove(item); Save(); UpdateLabels(); return Task.CompletedTask; }
-    void FillProfile() { var p = settings.Labels; profileName.Text = p.Name; includeQr.IsChecked = p.Qr; foreach (var x in dimensions) x.Value.Text = typeof(LabelProfile).GetProperty(x.Key)!.GetValue(p)!.ToString(); profileChoice.ItemsSource = settings.LabelProfiles.Keys.ToList(); }
+    Task ClearQueueAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); settings.LabelQueue.Clear(); Save(); UpdateLabels(); return Task.CompletedTask; }
+    async Task LoadPrintersAsync()
+    {
+        var printers = await Task.Run(LabelPrinter.List); var fallback = await Task.Run(LabelPrinter.Default);
+        printerChoice.ItemsSource = printers;
+        printerChoice.SelectedItem = printers.Contains(settings.Printer) ? settings.Printer : printers.Contains(fallback ?? "") ? fallback : printers.FirstOrDefault();
+        if (printers.Count == 0) printerChoice.PlaceholderText = "Žádná tiskárna nenalezena (použije se výchozí)";
+    }
+    void FillProfile() { var p = settings.Labels; profileName.Text = p.Name; includeQr.IsChecked = p.Qr; foreach (var x in dimensions) x.Value.Text = typeof(LabelProfile).GetProperty(x.Key)!.GetValue(p)!.ToString(); filling = true; profileChoice.ItemsSource = settings.LabelProfiles.Keys.ToList(); profileChoice.SelectedItem = p.Name; filling = false; }
     Task SaveProfileAsync()
     {
         if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu.");
@@ -250,15 +459,24 @@ public sealed class MainWindow : Window
             button.Click += (_, _) => { s.Start = index; Save(); UpdateLabels(); }; var cell = Stack(button, used); cell.Margin = new(2); Grid.SetRow(cell, i / p.Columns); Grid.SetColumn(cell, i % p.Columns); labelGrid.Children.Add(cell);
         }
         var next = s.Next(p); sheetStatus.Text = $"Arch {s.Id[..6]} · použito {s.Used.Count}/{p.Capacity} · " + (next == p.Capacity ? "plný" : $"další pozice {next / p.Columns + 1}:{next % p.Columns + 1}") + $" · fronta {settings.LabelQueue.Count}" + (settings.PendingPrint != null ? " · čeká potvrzení tisku" : "");
-        if (updateSheets) sheetChoice.ItemsSource = settings.LabelSheets.Values.Where(x => x.ProfileKey == p.Key).Select(x => new SheetOption(x, p.Capacity)).ToList();
+        if (updateSheets) { filling = true; var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == p.Key).Select(x => new SheetOption(x, p.Capacity)).ToList(); sheetChoice.ItemsSource = sheets; sheetChoice.SelectedItem = sheets.FirstOrDefault(x => x.Sheet.Id == s.Id); filling = false; }
     }
     async Task ExportAsync(bool print)
     {
-        settings.PendingPrint ??= LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue); Save(); UpdateLabels();
+        if (settings.PendingPrint == null)
+        {
+            // Google IDs may have been filled since the label was queued; use the current link for the QR code.
+            var current = catalog?.Records.ToDictionary(r => r.Code) ?? [];
+            settings.LabelQueue = settings.LabelQueue.Select(l => l.Url.Length == 0 && current.GetValueOrDefault(l.Code) is { DriveUrl.Length: > 0 } r ? l with { Url = r.DriveUrl, Id = r.DriveId } : l).ToList();
+            settings.PendingPrint = LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue);
+        }
+        Save(); UpdateLabels();
+        var withoutLink = settings.Labels.Qr ? settings.PendingPrint.Placements.Count(x => x.Label.Url.Length == 0) : 0;
+        var note = withoutLink > 0 ? $" {withoutLink} štítků zatím nemá Google ID, jejich QR obsahuje evidenční číslo." : "";
+        if (print) { status.Text = "Tisk…"; status.Text = await LabelPrinter.PrintAsync(settings.Labels, settings.PendingPrint, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + " Po tisku potvrďte skutečně využité nálepky." + note; return; }
         var folder = Path.Combine(store.Root, "labels"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, settings.PendingPrint.Id + ".pdf");
         LabelPdf.Export(path, settings.Labels, settings.PendingPrint);
-        if (print) { await LabelPdf.SubmitAsync(path, printer.Text, Token); status.Text = Environment.GetEnvironmentVariable("FLATPAK_ID") != null ? "PDF otevřeno pro tisk. Zvolte 100 % a po tisku potvrďte využité nálepky." : "Úloha předána tiskárně. Po tisku potvrďte skutečně využité nálepky."; }
-        else { GoogleAuth.OpenBrowser(path); status.Text = "PDF otevřeno. Tiskněte v měřítku 100 %, bez přizpůsobení na stránku. Potom potvrďte výsledek."; }
+        GoogleAuth.OpenBrowser(path); status.Text = "PDF otevřeno. Při tisku z PDF zvolte měřítko 100 %, bez přizpůsobení na stránku. Potom potvrďte výsledek." + note;
     }
     async Task ConfirmPrintAsync()
     {
@@ -274,8 +492,6 @@ public sealed class MainWindow : Window
     }
     Task CancelPrintAsync() { settings.PendingPrint = null; Save(); UpdateLabels(); status.Text = "Tisková úloha zrušena; pozice archu zůstaly zachované."; return Task.CompletedTask; }
     void ImportOAuth(string json) { var root = JsonDocument.Parse(json).RootElement; var item = root.TryGetProperty("installed", out var installed) ? installed : root; settings.ClientId = item.GetProperty("client_id").GetString() ?? ""; settings.ClientSecret = item.TryGetProperty("client_secret", out var s) ? s.GetString() ?? "" : ""; }
-    async Task ImportOAuthAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Google OAuth desktop client JSON", AllowMultiple = false }); if (files.Count == 0) return; var path = files[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní JSON."); ImportOAuth(await File.ReadAllTextAsync(path, Token)); clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; Save(); InitializeServices(); online = false; UpdateArchive(); status.Text = "OAuth klient nastaven. Na kartě Archiv se přihlaste Google účtem."; }
-    Task SaveOAuthAsync() { settings.ClientId = clientId.Text?.Trim() ?? ""; settings.ClientSecret = clientSecret.Text?.Trim() ?? ""; settings.ReadOnly = readOnly.IsChecked == true; Save(); InitializeServices(); online = false; UpdateArchive(); status.Text = "Google nastavení uloženo. Znovu se přihlaste na kartě Archiv."; return Task.CompletedTask; }
-    async Task RepairIdsAsync() { RequireOnline(); var count = await service.RepairIdsAsync(Profile(), Token); await RefreshAsync(); status.Text = $"Doplněno {count} jednoznačných Google ID v Q."; }
+    async Task ImportOAuthAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Google OAuth desktop client JSON", AllowMultiple = false }); if (files.Count == 0) return; var path = files[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní JSON."); ImportOAuth(await File.ReadAllTextAsync(path, Token)); clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; Save(); InitializeServices(); driveOnline = false; UpdateArchive(); status.Text = "OAuth klient nastaven. Propojení s Google Drive obnovíte na kartě Archiv."; }
+    Task SaveOAuthAsync() { settings.ClientId = clientId.Text?.Trim() ?? ""; settings.ClientSecret = clientSecret.Text?.Trim() ?? ""; Save(); InitializeServices(); driveOnline = false; UpdateArchive(); status.Text = "Google nastavení uloženo. Propojení s Google Drive obnovíte na kartě Archiv."; return Task.CompletedTask; }
 }
-static class UiExtensions { public static void ToolTipSet(this Control c, string text) => ToolTip.SetTip(c, text); }

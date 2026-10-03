@@ -65,7 +65,7 @@ public sealed class GoogleAuth(AppSettings settings, ISecretStore secrets, HttpC
         {
             var redirect = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/";
             var parameters = new Dictionary<string, string>{{"client_id",settings.ClientId},{"redirect_uri",redirect},{"response_type","code"},
-                {"scope","openid email "+(settings.ReadOnly?"https://www.googleapis.com/auth/drive.readonly":"https://www.googleapis.com/auth/drive")},
+                {"scope","openid email https://www.googleapis.com/auth/drive.metadata.readonly"},
                 {"code_challenge",Base64(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)))},{"code_challenge_method","S256"},{"state",state},{"access_type","offline"},{"prompt","consent select_account"}};
             OpenBrowser("https://accounts.google.com/o/oauth2/v2/auth?" + string.Join('&', parameters.Select(x => Uri.EscapeDataString(x.Key) + "=" + Uri.EscapeDataString(x.Value))));
             string? code = null;

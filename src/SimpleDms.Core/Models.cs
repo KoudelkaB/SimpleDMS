@@ -23,17 +23,30 @@ public static class SearchText
 }
 public sealed record DocumentDraft(string Category, string Title, string Reference = "", string Author = "",
     string Validity = "", string Notes = "", bool Pending = false);
-public sealed record ArchiveProfile(string RootId, string WorkbookId, string DocumentsId, string Name,
-    string AccountId, string AccountEmail, bool CanWrite, string? LocalRoot = null, string? DocumentsName = null, bool ManagedCopy = false)
+// The archive is a local folder kept in sync by Google Drive for desktop, Insync or rclone.
+// Drive fields are optional and serve only to fill Google IDs (Q) for links and QR codes.
+public sealed record ArchiveProfile(string Root, string Name, string DocumentsName,
+    string? DriveRootId = null, string AccountId = "", string AccountEmail = "")
 {
-    public string Key => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-        Encoding.UTF8.GetBytes(AccountId + ":" + WorkbookId)))[..24];
+    public string WorkbookPath => Path.Combine(Root, Name + ".xlsx");
+    public string DocumentsPath => Path.Combine(Root, DocumentsName);
+    public bool DriveLinked => !string.IsNullOrEmpty(DriveRootId) && AccountId.Length > 0;
+    public string Key
+    {
+        get
+        {
+            var root = Path.GetFullPath(Root).TrimEnd(Path.DirectorySeparatorChar);
+            if (OperatingSystem.IsWindows()) root = root.ToUpperInvariant();
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(root + "|" + Name)))[..24];
+        }
+    }
 }
 public sealed class AppSettings
 {
     public string ClientId { get; set; } = "";
     public string ClientSecret { get; set; } = "";
     public bool ReadOnly { get; set; }
+    public string Printer { get; set; } = "";
     public ArchiveProfile? Archive { get; set; }
     public LabelProfile Labels { get; set; } = new();
     public LabelSheet Sheet { get; set; } = new();

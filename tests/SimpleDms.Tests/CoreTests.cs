@@ -26,14 +26,14 @@ public sealed class CoreTests
     [Fact]
     public void TemplateAndRoundtripPreserveDocumentsAndExplicitState()
     {
-        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "Žádost", "Ref", "Autor", Notes: "Šanon", Pending: true), "100001_Zadost", "https://drive.google.com/open?id=test", "test");
+        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "Žádost", "Ref", "Autor", Notes: "Šanon", Pending: true), "/100001_Zadost"); c.SetDriveId("100001", "test");
         var loaded = new WorkbookCatalog(c.Save()); var r = Assert.Single(loaded.Records); Assert.True(r.Pending); Assert.Equal("Žádost", r.Title); Assert.Equal("test", r.DriveId); Assert.Empty(loaded.Warnings);
         loaded.SetPending(r.Code, false); Assert.False(Assert.Single(new WorkbookCatalog(loaded.Save()).Records).Pending);
     }
     [Fact]
     public void OnlyWholeOrangeRowIsPending()
     {
-        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "Rozpracované", Pending: true), "", "", ""); c.Append("100002", new("10", "Jen název"), "", "", "");
+        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "Rozpracované", Pending: true), ""); c.Append("100002", new("10", "Jen název"), "");
         var bytes = Modify(c.Save(), "xl/worksheets/sheet1.xml", xml =>
         {
             XNamespace s = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"; var rows = xml.Descendants(s + "row").ToList();
@@ -46,9 +46,9 @@ public sealed class CoreTests
     [Fact]
     public void WorkbookKeepsUntouchedZipPartsAndExistingFormulas()
     {
-        var bytes = WorkbookCatalog.Create(); var c = new WorkbookCatalog(bytes); c.Append("100001", new("10", "První"), "", "", "");
+        var bytes = WorkbookCatalog.Create(); var c = new WorkbookCatalog(bytes); c.Append("100001", new("10", "První"), "");
         bytes = Modify(c.Save(), "xl/worksheets/sheet1.xml", xml => { XNamespace s = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"; var cell = xml.Descendants(s + "c").Single(x => (string?)x.Attribute("r") == "P2"); cell.Elements().Remove(); cell.SetAttributeValue("t", null); cell.Add(new XElement(s + "f", "CONCAT(A2,B2,C2,D2,E2,F2)"), new XElement(s + "v", "100001")); });
-        c = new(bytes); c.Append("100002", new("10", "Další", Pending: true), "", "", ""); var result = c.Save();
+        c = new(bytes); c.Append("100002", new("10", "Další", Pending: true), ""); var result = c.Save();
         Assert.Equal(Entry(bytes, "xl/worksheets/sheet2.xml"), Entry(result, "xl/worksheets/sheet2.xml"));
         Assert.Contains("CONCAT(A2,B2,C2,D2,E2,F2)", System.Text.Encoding.UTF8.GetString(Entry(result, "xl/worksheets/sheet1.xml")));
         Assert.Equal(2, new WorkbookCatalog(result).Records.Count);
@@ -57,9 +57,9 @@ public sealed class CoreTests
     public void ReplacingLastHyperlinkDropsEmptyHyperlinksElement()
     {
         XNamespace s = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "První"), "", "", "");
+        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "První"), "");
         var bytes = Modify(c.Save(), "xl/worksheets/sheet1.xml", xml => xml.Root!.Add(new XElement(s + "hyperlinks", new XElement(s + "hyperlink", new XAttribute("ref", "M2")))));
-        c = new(bytes); c.SetAttachments("100001", "100001_Prvni", "https://drive.google.com/drive/folders/f", "f");
+        c = new(bytes); c.SetAttachments("100001", "/100001_Prvni");
         var sheet = XDocument.Load(new MemoryStream(Entry(c.Save(), "xl/worksheets/sheet1.xml")));
         Assert.Empty(sheet.Root!.Elements(s + "hyperlinks"));
     }
@@ -93,8 +93,50 @@ public sealed class CoreTests
         c.SetPending(c.Records.First(x => !x.Pending).Code, true); var saved = c.Save(); Assert.Equal(668, new WorkbookCatalog(saved).Records.Count); Assert.Equal(6, new WorkbookCatalog(saved).Records.Count(x => x.Pending));
         Assert.Equal(hash, SHA256.HashData(File.ReadAllBytes(path))); Assert.Equal(Entry(source, "xl/worksheets/sheet2.xml"), Entry(saved, "xl/worksheets/sheet2.xml"));
     }
+    [Fact]
+    public void HierarchicalCategorySheetNamesTwoDigitCodes()
+    {
+        XNamespace s = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        XElement Row(int r, params (string Col, string Value)[] cells) => new(s + "row", new XAttribute("r", r), cells.Select(c => new XElement(s + "c", new XAttribute("r", c.Col + r), new XAttribute("t", "inlineStr"), new XElement(s + "is", new XElement(s + "t", c.Value)))));
+        var bytes = Modify(WorkbookCatalog.Create(), "xl/worksheets/sheet2.xml", xml => xml.Root!.Element(s + "sheetData")!.Add(
+            Row(1, ("A", "N1"), ("C", "N2")), Row(2, ("A", "1"), ("B", "KS Nymburk"), ("C", "0"), ("D", "smlouvy")), Row(3, ("C", "1"), ("D", "časopisy")), Row(4, ("A", "2"), ("B", "Sbor"), ("C", "0"), ("D", "účetnictví"))));
+        var c = new WorkbookCatalog(bytes);
+        Assert.Equal("smlouvy", c.Categories["10"]); Assert.Equal("časopisy", c.Categories["11"]); Assert.Equal("účetnictví", c.Categories["20"]); Assert.Equal(3, c.Categories.Count);
+    }
+    [Fact]
+    public void NewRowsStoreDatesAndLegacyLinkFormulas()
+    {
+        var c = new WorkbookCatalog(WorkbookCatalog.Create());
+        c.Append("100001", new("10", "Smlouva", Validity: "26.5.2032"), "/100001_Smlouva", @"G:\Můj disk\Archiv\Dokumenty");
+        var saved = c.Save(); var r = Assert.Single(new WorkbookCatalog(saved).Records);
+        Assert.Equal("26.5.2032", r.Validity); Assert.True(r.Electronic); Assert.Equal("", r.DriveUrl); Assert.Equal("/100001_Smlouva", r.RelativePath);
+        var xml = System.Text.Encoding.UTF8.GetString(Entry(saved, "xl/worksheets/sheet1.xml"));
+        Assert.Contains("<v>" + new DateTime(2032, 5, 26).ToOADate().ToString(System.Globalization.CultureInfo.InvariantCulture) + "</v>", xml);
+        Assert.Contains("HYPERLINK(\"https://drive.google.com/open?id=\"&amp;Q2,\"otevřít\")", xml);
+        Assert.Contains("HYPERLINK(\"G:\\Můj disk\\Archiv\\Dokumenty\"&amp;L2,\"otevřít\")", xml);
+        Assert.Contains("numFmtId=\"14\"", System.Text.Encoding.UTF8.GetString(Entry(saved, "xl/styles.xml")));
+        var linked = new WorkbookCatalog(saved); linked.SetDriveId("100001", "abc123");
+        Assert.Equal("https://drive.google.com/open?id=abc123", Assert.Single(new WorkbookCatalog(linked.Save()).Records).DriveUrl);
+    }
+    [Fact]
+    public void SavingDropsCalcChainSoExcelDoesNotRepair()
+    {
+        using var m = new MemoryStream(); m.Write(WorkbookCatalog.Create());
+        using (var z = new ZipArchive(m, ZipArchiveMode.Update, true))
+        {
+            using (var w = new StreamWriter(z.CreateEntry("xl/calcChain.xml").Open())) w.Write("<calcChain xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><c r=\"M2\" i=\"1\"/></calcChain>");
+            void Patch(string name, string find, string replace) { var e = z.GetEntry(name)!; string text; using (var r = new StreamReader(e.Open())) text = r.ReadToEnd(); e.Delete(); using var w = new StreamWriter(z.CreateEntry(name).Open()); w.Write(text.Replace(find, replace)); }
+            Patch("xl/_rels/workbook.xml.rels", "</Relationships>", "<Relationship Id=\"rId9\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain\" Target=\"calcChain.xml\"/></Relationships>");
+            Patch("[Content_Types].xml", "</Types>", "<Override PartName=\"/xl/calcChain.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml\"/></Types>");
+        }
+        var c = new WorkbookCatalog(m.ToArray()); c.Append("100001", new("10", "První"), ""); var saved = c.Save();
+        using var result = new ZipArchive(new MemoryStream(saved));
+        Assert.Null(result.GetEntry("xl/calcChain.xml"));
+        Assert.DoesNotContain("calcChain", System.Text.Encoding.UTF8.GetString(Entry(saved, "xl/_rels/workbook.xml.rels")));
+        Assert.DoesNotContain("calcChain", System.Text.Encoding.UTF8.GetString(Entry(saved, "[Content_Types].xml")));
+    }
     internal static byte[] Entry(byte[] bytes, string name) { using var z = new ZipArchive(new MemoryStream(bytes)); using var m = new MemoryStream(); using var s = z.GetEntry(name)!.Open(); s.CopyTo(m); return m.ToArray(); }
-    static byte[] Modify(byte[] bytes, string name, Action<XDocument> action)
+    internal static byte[] Modify(byte[] bytes, string name, Action<XDocument> action)
     {
         using var m = new MemoryStream(); m.Write(bytes); using (var z = new ZipArchive(m, ZipArchiveMode.Update, true)) { var entry = z.GetEntry(name)!; XDocument doc; using (var stream = entry.Open()) doc = XDocument.Load(stream); action(doc); entry.Delete(); using var output = z.CreateEntry(name).Open(); doc.Save(output); }
         return m.ToArray();

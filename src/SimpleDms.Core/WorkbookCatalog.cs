@@ -51,11 +51,16 @@ public sealed class WorkbookCatalog
         var categories = new Dictionary<string, string>();
         if (cats != null)
         {
+            // Legacy layout: A = N1 digit with its group name in B (filled only on the first row of
+            // the group), C = N2 digit with the category name in D. Flat "10 | name" is also accepted.
+            var n1 = "";
             foreach (var row in Load(parts[FindPath(cats)]).Descendants(S + "row"))
             {
-                var a = Value(Cell(row, "A")); var b = Value(Cell(row, "B"));
-                var code = Regex.IsMatch(a, "^[0-9]{2}$") ? a : Regex.IsMatch(a + b, "^[0-9]{2}$") ? a + b : "";
-                if (code.Length == 2) categories.TryAdd(code, Value(Cell(row, a.Length == 2 ? "B" : "C")));
+                var v = new[] { "A", "B", "C", "D" }.Select(c => Value(Cell(row, c)).Trim()).ToArray();
+                if (Regex.IsMatch(v[0], "^[0-9]{2}$")) { categories.TryAdd(v[0], v[1]); continue; }
+                if (Regex.IsMatch(v[0] + v[1], "^[0-9]{2}$")) { categories.TryAdd(v[0] + v[1], v[2]); continue; }
+                if (Regex.IsMatch(v[0], "^[0-9]$")) n1 = v[0];
+                if (n1.Length == 1 && Regex.IsMatch(v[2], "^[0-9]$")) categories.TryAdd(n1 + v[2], v[3]);
             }
         }
         Reload();
@@ -84,6 +89,16 @@ public sealed class WorkbookCatalog
             return (string?)Load(bytes).Root!.Elements().FirstOrDefault(x => (string?)x.Attribute("Id") == id)?.Attribute("Target") ?? Value(cell);
         return Value(cell);
     }
+    public static string DriveLink(string id) => "https://drive.google.com/open?id=" + Uri.EscapeDataString(id);
+    // Platnost is stored as an Excel date serial in the legacy register.
+    string DateValue(XElement? cell)
+    {
+        var value = Value(cell);
+        return cell?.Attribute("t") == null && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var serial) && serial >= 1 && serial < 2958466
+            ? DateTime.FromOADate(serial).ToString("d.M.yyyy", CultureInfo.InvariantCulture) : value;
+    }
+    public static DateTime? ParseDate(string text) => DateTime.TryParseExact(text.Trim(), ["d.M.yyyy", "d. M. yyyy", "d.M.yy", "yyyy-MM-dd"],
+        CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date : null;
     int Style(XElement? cell) => (int?)cell?.Attribute("s") ?? 0;
     string? Fill(XElement? cell)
     {
@@ -111,9 +126,12 @@ public sealed class WorkbookCatalog
             if (state.Length > 0 && pending != orange) Warnings.Add($"{code}: stav a oranžová výplň se liší.");
             var p = Value(Cell(row, "P"));
             if (p.Length > 0 && p != code) Warnings.Add($"{code}: souhrnné číslo v P se liší od A–F.");
+            // M is usually a (shared) HYPERLINK formula built from Q, so Q is the reliable source of the link.
+            var id = Value(Cell(row, "Q")).Trim(); var link = LinkValue(Cell(row, "M"));
+            var url = id.Length > 0 ? DriveLink(id) : Regex.IsMatch(link, "^https://drive\\.google\\.com/.*(?:/d/|/folders/|[?&]id=)[A-Za-z0-9_-]{10,}") ? link : "";
             list.Add(new((int)row.Attribute("r")!, code, Value(Cell(row, "G")), Value(Cell(row, "H")), Value(Cell(row, "I")),
-                Value(Cell(row, "J")), Value(Cell(row, "K")).Equals("ano", StringComparison.OrdinalIgnoreCase),
-                Value(Cell(row, "L")), LinkValue(Cell(row, "M")), LinkValue(Cell(row, "N")), Value(Cell(row, "O")), Value(Cell(row, "Q")), pending));
+                DateValue(Cell(row, "J")), Value(Cell(row, "K")).Equals("ano", StringComparison.OrdinalIgnoreCase),
+                Value(Cell(row, "L")), url, LinkValue(Cell(row, "N")), Value(Cell(row, "O")), id, pending));
         }
         if (list.GroupBy(x => x.Code).Any(g => g.Count() > 1)) throw new InvalidOperationException("Registr obsahuje duplicitní evidenční čísla. Zápis nelze bezpečně provést.");
         Records = list;
@@ -144,23 +162,80 @@ public sealed class WorkbookCatalog
         cell.Elements().Where(e => e.Name == S + "v" || e.Name == S + "f" || e.Name == S + "is").Remove();
         cell.SetAttributeValue("t", "inlineStr");
         cell.AddFirst(new XElement(S + "is", new XElement(S + "t", new XAttribute(XNamespace.Xml + "space", "preserve"), value)));
-        if (col is "M" or "N")
+        if (col is "M" or "N") RemoveHyperlink(row, col);
+    }
+    void RemoveHyperlink(XElement row, string col)
+    {
+        sheet.Descendants(S + "hyperlink").Where(x => (string?)x.Attribute("ref") == col + (string)row.Attribute("r")!).Remove();
+        // An empty <hyperlinks/> violates the schema and Excel reports the file as damaged.
+        sheet.Root!.Elements(S + "hyperlinks").Where(x => !x.HasElements).Remove();
+    }
+    void SetFormula(XElement row, string col, string formula, string cached)
+    {
+        var cell = EnsureCell(row, col);
+        cell.Elements().Where(e => e.Name == S + "v" || e.Name == S + "f" || e.Name == S + "is").Remove();
+        cell.SetAttributeValue("t", "str");
+        cell.Add(new XElement(S + "f", formula), new XElement(S + "v", cached));
+        RemoveHyperlink(row, col);
+    }
+    // Same formulas as the legacy register: M opens the Drive item from Q, N the synchronized local folder.
+    void SetLinks(XElement row, string localDocuments, bool electronic)
+    {
+        var r = (string)row.Attribute("r")!; var cached = electronic ? "otevřít" : "";
+        foreach (var (col, target) in new[] { ("M", "\"https://drive.google.com/open?id=\"&Q" + r), ("N", "\"" + localDocuments.Replace("\"", "\"\"") + "\"&L" + r) })
         {
-            sheet.Descendants(S + "hyperlink").Where(x => (string?)x.Attribute("ref") == col + (string)row.Attribute("r")!).Remove();
-            // An empty <hyperlinks/> violates the schema and Excel reports the file as damaged.
-            sheet.Root!.Elements(S + "hyperlinks").Where(x => !x.HasElements).Remove();
+            if (col == "N" && localDocuments.Length == 0) continue;
+            var cell = Cell(row, col);
+            if (cell?.Element(S + "f") != null) { cell.SetAttributeValue("t", "str"); cell.Elements(S + "v").Remove(); cell.Add(new XElement(S + "v", cached)); RemoveHyperlink(row, col); continue; }
+            SetFormula(row, col, $"IF(K{r}=\"ano\",HYPERLINK({target},\"otevřít\"),\"\")", cached);
         }
     }
-    public DocumentRecord Append(string code, DocumentDraft draft, string path, string url, string id)
+    int AddStyle(XElement xf)
+    {
+        var xfs = styles.Root!.Element(S + "cellXfs")!;
+        var match = xfs.Elements().ToList().FindIndex(x => XNode.DeepEquals(x, xf));
+        if (match < 0) { match = xfs.Elements().Count(); xfs.Add(xf); xfs.SetAttributeValue("count", match + 1); }
+        return match;
+    }
+    void SetDate(XElement row, string col, DateTime date)
+    {
+        var cell = EnsureCell(row, col);
+        cell.Elements().Where(e => e.Name == S + "v" || e.Name == S + "f" || e.Name == S + "is").Remove();
+        cell.SetAttributeValue("t", null);
+        cell.Add(new XElement(S + "v", date.ToOADate().ToString(CultureInfo.InvariantCulture)));
+        var xf = new XElement(styles.Root!.Element(S + "cellXfs")!.Elements().ElementAt(Style(cell)));
+        var format = (int?)xf.Attribute("numFmtId") ?? 0;
+        var custom = (string?)styles.Root!.Element(S + "numFmts")?.Elements().FirstOrDefault(x => (int?)x.Attribute("numFmtId") == format)?.Attribute("formatCode") ?? "";
+        if (format is >= 14 and <= 22 || Regex.IsMatch(custom, "[dy]", RegexOptions.IgnoreCase)) return;
+        xf.SetAttributeValue("numFmtId", 14); xf.SetAttributeValue("applyNumberFormat", 1);
+        cell.SetAttributeValue("s", AddStyle(xf));
+    }
+    // relativePath is "/folder" relative to the documents folder, as in the legacy register.
+    public DocumentRecord Append(string code, DocumentDraft draft, string relativePath, string localDocuments = "")
     {
         if (Warnings.Any(w => w.Contains("neúplné evidenční číslo"))) throw new InvalidOperationException("Nejprve opravte neúplná evidenční čísla v registru.");
         if (!Regex.IsMatch(code, "^[0-9]{6}$") || Records.Any(r => r.Code == code)) throw new InvalidOperationException("Neplatné nebo použité číslo.");
         if (string.IsNullOrWhiteSpace(draft.Title)) throw new InvalidOperationException("Doplňte název dokumentu.");
         var rowNumber = sheet.Descendants(S + "row").Where(r => r.Elements(S + "c").Any(c => Value(c).Length > 0)).Select(r => (int)r.Attribute("r")!).Max() + 1;
         var row = Row(rowNumber);
-        for (var i = 0; i < 6; i++) Set(row, ((char)('A' + i)).ToString(), code[i].ToString());
-        var values = new[] { draft.Title, draft.Reference, draft.Author, draft.Validity, id.Length > 0 ? "ano" : "ne", path, url, "", draft.Notes, code, id };
-        for (var i = 0; i < values.Length; i++) Set(row, ((char)('G' + i)).ToString(), values[i]);
+        // New rows look like their predecessor (fonts, wrapping, date format of J).
+        if (Records.Count > 0)
+        {
+            var previous = Row(Records.MaxBy(r => r.Row)!.Row);
+            foreach (var cell in previous.Elements(S + "c").Where(c => (string?)c.Attribute("s") != null && ColumnIndex(Regex.Replace((string)c.Attribute("r")!, "[0-9]", "")) <= 18))
+                EnsureCell(row, Regex.Replace((string)cell.Attribute("r")!, "[0-9]", "")).SetAttributeValue("s", (string)cell.Attribute("s")!);
+        }
+        // The legacy register keeps N1–N6 as numbers; text digits would show Excel's "number stored as text".
+        for (var i = 0; i < 6; i++)
+        {
+            var cell = EnsureCell(row, ((char)('A' + i)).ToString());
+            cell.Elements().Remove(); cell.SetAttributeValue("t", null); cell.Add(new XElement(S + "v", code[i].ToString()));
+        }
+        var electronic = relativePath.Length > 0;
+        var values = new[] { ("G", draft.Title), ("H", draft.Reference), ("I", draft.Author), ("J", draft.Validity), ("K", electronic ? "ano" : "ne"), ("L", relativePath), ("O", draft.Notes), ("P", code), ("Q", "") };
+        foreach (var (col, value) in values)
+            if (col == "J" && ParseDate(value) is { } date) SetDate(row, col, date); else Set(row, col, value);
+        SetLinks(row, localDocuments, electronic);
         SetPending(code, draft.Pending);
         var dimension = sheet.Root!.Element(S + "dimension");
         var last = Regex.Match((string?)dimension?.Attribute("ref") ?? "R1", @"([A-Z]+)([0-9]+)$");
@@ -169,9 +244,19 @@ public sealed class WorkbookCatalog
         dimension?.SetAttributeValue("ref", "A1:" + column + Math.Max(rowNumber, lastRow));
         Reload(); return Records.Single(r => r.Code == code);
     }
-    public void SetDriveId(string code, string id) => Set(Row(Records.Single(r => r.Code == code).Row), "Q", id);
-    public void SetAttachments(string code, string path, string url, string id)
-    { var row = Row(Records.Single(r => r.Code == code).Row); Set(row, "K", "ano"); Set(row, "L", path); Set(row, "M", url); Set(row, "Q", id); Reload(); }
+    public void SetDriveId(string code, string id)
+    {
+        var record = Records.Single(r => r.Code == code); var row = Row(record.Row);
+        Set(row, "Q", id); if (Cell(row, "M")?.Element(S + "f") == null) SetLinks(row, "", record.Electronic); Reload();
+    }
+    public void SetAttachments(string code, string relativePath, string localDocuments = "")
+    {
+        var record = Records.Single(r => r.Code == code); var row = Row(record.Row);
+        Set(row, "K", "ano");
+        // A new target folder makes the old Q stale; the linker fills the folder ID later.
+        if (record.RelativePath != relativePath) { Set(row, "L", relativePath); Set(row, "Q", ""); }
+        SetLinks(row, localDocuments, true); Reload();
+    }
     public void SetPending(string code, bool pending)
     {
         var row = sheet.Descendants(S + "row").Single(r => string.Concat(Enumerable.Range(0, 6).Select(i => Value(Cell(r, ((char)('A' + i)).ToString())))) == code);
@@ -212,6 +297,16 @@ public sealed class WorkbookCatalog
         if (!rels.Root!.Elements().Any(x => (string?)x.Attribute("Target") == "customXml/simpledms-state.xml"))
             rels.Root.Add(new XElement(P + "Relationship", new XAttribute("Id", "simpledmsState"), new XAttribute("Type", R.NamespaceName + "/customXml"), new XAttribute("Target", "customXml/simpledms-state.xml")));
         parts["_rels/.rels"] = Bytes(rels);
+        // calcChain lists formula cells; a stale chain makes Excel "repair" the file. Excel rebuilds it.
+        if (parts.Remove("xl/calcChain.xml"))
+        {
+            var bookRels = Load(parts["xl/_rels/workbook.xml.rels"]);
+            bookRels.Root!.Elements().Where(x => ((string?)x.Attribute("Type") ?? "").EndsWith("/calcChain", StringComparison.Ordinal)).Remove();
+            parts["xl/_rels/workbook.xml.rels"] = Bytes(bookRels);
+            var types = Load(parts["[Content_Types].xml"]);
+            types.Root!.Elements().Where(x => (string?)x.Attribute("PartName") == "/xl/calcChain.xml").Remove();
+            parts["[Content_Types].xml"] = Bytes(types);
+        }
         using var output = new MemoryStream();
         using (var zip = new ZipArchive(output, ZipArchiveMode.Create, true)) foreach (var p in parts) { using var st = zip.CreateEntry(p.Key).Open(); st.Write(p.Value); }
         return output.ToArray();

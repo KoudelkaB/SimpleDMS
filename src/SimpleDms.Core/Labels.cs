@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using QRCoder;
@@ -77,58 +78,196 @@ public static class LabelPlanner
         return (sheet, queue.Where(x => !completedKeys.Contains(x.Key)).ToList());
     }
 }
+// Draws label pages in millimetres; shared by the PDF preview and direct printing.
+sealed class LabelRenderer : IDisposable
+{
+    readonly SKPaint paint = new() { Color = SKColors.Black, IsAntialias = true };
+    readonly SKPaint qrPaint = new() { Color = SKColors.Black, IsAntialias = false };
+    readonly SKTypeface typeface = SKTypeface.FromFamilyName("sans-serif");
+    readonly SKFont numberFont, titleFont;
+    public LabelRenderer() { numberFont = new(typeface, 5.2f); titleFont = new(typeface, 3.1f); }
+    public static void Check(LabelProfile profile, PrintPlan plan)
+    {
+        profile.Validate();
+        if (profile.Key != plan.ProfileKey) throw new InvalidOperationException("Profil se po vytvoření tiskové úlohy změnil.");
+    }
+    public void Draw(SKCanvas canvas, LabelProfile profile, PrintPage page)
+    {
+        foreach (var placement in page.Placements)
+        {
+            var x = profile.Left + profile.OffsetX + (placement.Position % profile.Columns) * (profile.Width + profile.GapX);
+            var y = profile.Top + profile.OffsetY + (placement.Position / profile.Columns) * (profile.Height + profile.GapY);
+            canvas.Save(); canvas.ClipRect(new SKRect(x, y, x + profile.Width, y + profile.Height));
+            var qrSize = profile.Qr ? Math.Min(18, profile.Height - 4) : 0;
+            var textWidth = profile.Width - 4 - (profile.Qr ? qrSize + 2 : 0);
+            canvas.DrawText(placement.Label.Code, x + 2, y + 7, numberFont, paint);
+            var title = placement.Label.Title.Normalize();
+            while (title.Length > 0 && titleFont.MeasureText(title, paint) > textWidth) title = title[..^1];
+            canvas.DrawText(title, x + 2, y + 12, titleFont, paint);
+            if (profile.Qr)
+            {
+                using var qr = QRCodeGenerator.GenerateQrCode(placement.Label.Url.Length > 0 ? placement.Label.Url : placement.Label.Code, QRCodeGenerator.ECCLevel.M);
+                var matrix = qr.ModuleMatrix; var size = qrSize / matrix.Count;
+                for (int row = 0; row < matrix.Count; row++) for (int col = 0; col < matrix.Count; col++) if (matrix[row][col])
+                            canvas.DrawRect(x + profile.Width - qrSize - 2 + col * size, y + 2 + row * size, size, size, qrPaint);
+            }
+            canvas.Restore();
+        }
+    }
+    public void Dispose() { numberFont.Dispose(); titleFont.Dispose(); typeface.Dispose(); paint.Dispose(); qrPaint.Dispose(); }
+}
 public static class LabelPdf
 {
     public static void Export(string path, LabelProfile profile, PrintPlan plan)
     {
-        profile.Validate();
-        if (profile.Key != plan.ProfileKey) throw new InvalidOperationException("Profil se po vytvoření tiskové úlohy změnil.");
+        LabelRenderer.Check(profile, plan);
         using var document = SKDocument.CreatePdf(path) ?? throw new InvalidOperationException("Nelze vytvořit PDF.");
-        using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
-        using var typeface = SKTypeface.FromFamilyName("sans-serif");
-        using var numberFont = new SKFont(typeface, 5.2f); using var titleFont = new SKFont(typeface, 3.1f);
+        using var renderer = new LabelRenderer();
         const float mm = 72f / 25.4f;
         foreach (var page in plan.Pages)
         {
             var canvas = document.BeginPage(profile.PaperWidth * mm, profile.PaperHeight * mm); canvas.Scale(mm);
-            foreach (var placement in page.Placements)
-            {
-                var x = profile.Left + profile.OffsetX + (placement.Position % profile.Columns) * (profile.Width + profile.GapX);
-                var y = profile.Top + profile.OffsetY + (placement.Position / profile.Columns) * (profile.Height + profile.GapY);
-                canvas.Save(); canvas.ClipRect(new SKRect(x, y, x + profile.Width, y + profile.Height));
-                var qrSize = profile.Qr ? Math.Min(18, profile.Height - 4) : 0;
-                var textWidth = profile.Width - 4 - (profile.Qr ? qrSize + 2 : 0);
-                canvas.DrawText(placement.Label.Code, x + 2, y + 7, numberFont, paint);
-                var title = placement.Label.Title.Normalize();
-                while (title.Length > 0 && titleFont.MeasureText(title, paint) > textWidth) title = title[..^1];
-                canvas.DrawText(title, x + 2, y + 12, titleFont, paint);
-                if (profile.Qr)
-                {
-                    using var qr = QRCodeGenerator.GenerateQrCode(placement.Label.Url.Length > 0 ? placement.Label.Url : placement.Label.Code, QRCodeGenerator.ECCLevel.M);
-                    var matrix = qr.ModuleMatrix; var size = qrSize / matrix.Count;
-                    using var qrPaint = new SKPaint { Color = SKColors.Black, IsAntialias = false };
-                    for (int row = 0; row < matrix.Count; row++) for (int col = 0; col < matrix.Count; col++) if (matrix[row][col])
-                                canvas.DrawRect(x + profile.Width - qrSize - 2 + col * size, y + 2 + row * size, size, size, qrPaint);
-                }
-                canvas.Restore();
-            }
+            renderer.Draw(canvas, profile, page);
             document.EndPage();
         }
         document.Close();
     }
-    public static async Task SubmitAsync(string path, string? printer = null, CancellationToken ct = default)
+}
+public static class LabelPrinter
+{
+    static bool Flatpak => Environment.GetEnvironmentVariable("FLATPAK_ID") != null;
+    public static IReadOnlyList<string> List()
     {
+        try
+        {
+            if (OperatingSystem.IsWindows()) return WindowsPrint.Printers();
+            return Run("lpstat", "-e").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or System.Security.SecurityException or UnauthorizedAccessException) { return []; }
+    }
+    public static string? Default()
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows()) return WindowsPrint.DefaultPrinter();
+            var line = Run("lpstat", "-d"); var index = line.IndexOf(':');
+            return index > 0 ? line[(index + 1)..].Trim() : null;
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or System.Security.SecurityException or UnauthorizedAccessException) { return null; }
+    }
+    static string Run(string exe, params string[] args)
+    {
+        var info = new ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var arg in args) info.ArgumentList.Add(arg);
+        using var process = Process.Start(info) ?? throw new InvalidOperationException("Nelze spustit " + exe + ".");
+        var output = process.StandardOutput.ReadToEndAsync(); _ = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(10000)) { process.Kill(); throw new InvalidOperationException(exe + " neodpovídá."); }
+        return process.ExitCode == 0 ? output.Result : "";
+    }
+    // Returns a status message. Windows prints directly through GDI at exactly 100 % (no PDF viewer scaling);
+    // Linux sends the PDF to CUPS; Flatpak opens the PDF because it cannot reach the host printers.
+    public static async Task<string> PrintAsync(LabelProfile profile, PrintPlan plan, string? printer, string pdfFolder, CancellationToken ct = default)
+    {
+        LabelRenderer.Check(profile, plan);
         if (OperatingSystem.IsWindows())
         {
-            _ = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, Verb = "print" }) ?? throw new InvalidOperationException("Výchozí PDF prohlížeč nepodporuje tisk. Otevřete PDF a použijte jeho tiskové okno.");
-            return;
+            printer = string.IsNullOrWhiteSpace(printer) ? Default() : printer;
+            if (string.IsNullOrWhiteSpace(printer)) throw new InvalidOperationException("Vyberte tiskárnu.");
+            await Task.Run(() => { if (OperatingSystem.IsWindows()) WindowsPrint.Print(profile, plan, printer); }, ct);
+            return "Úloha předána tiskárně " + printer + ".";
         }
-        if (Environment.GetEnvironmentVariable("FLATPAK_ID") != null) { GoogleAuth.OpenBrowser(path); return; }
+        Directory.CreateDirectory(pdfFolder); var path = Path.Combine(pdfFolder, plan.Id + ".pdf"); LabelPdf.Export(path, profile, plan);
+        if (Flatpak) { GoogleAuth.OpenBrowser(path); return "PDF otevřeno pro tisk. Zvolte měřítko 100 %."; }
         var info = new ProcessStartInfo("lp") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true };
         if (!string.IsNullOrWhiteSpace(printer)) { info.ArgumentList.Add("-d"); info.ArgumentList.Add(printer); }
         info.ArgumentList.Add("-o"); info.ArgumentList.Add("scaling=100"); info.ArgumentList.Add("-o"); info.ArgumentList.Add("fit-to-page=false"); info.ArgumentList.Add(Path.GetFullPath(path));
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Nelze spustit tisk.");
         var error = process.StandardError.ReadToEndAsync(ct); var output = process.StandardOutput.ReadToEndAsync(ct); await process.WaitForExitAsync(ct); await output;
         if (process.ExitCode != 0) throw new InvalidOperationException("Tiskárna úlohu nepřijala: " + await error);
+        return "Úloha předána tiskárně" + (string.IsNullOrWhiteSpace(printer) ? "." : " " + printer + ".");
+    }
+}
+[System.Runtime.Versioning.SupportedOSPlatform("windows")]
+public static class WindowsPrint
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DocInfo { public int cbSize; public string lpszDocName; public string? lpszOutput; public string? lpszDatatype; public int fwType; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct BitmapInfoHeader { public int biSize, biWidth, biHeight; public short biPlanes, biBitCount; public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant; }
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateDCW")] static extern IntPtr CreateDC(string driver, string device, string? output, IntPtr mode);
+    [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode, EntryPoint = "StartDocW")] static extern int StartDoc(IntPtr dc, ref DocInfo info);
+    [DllImport("gdi32.dll")] static extern int EndDoc(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern int AbortDoc(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern int StartPage(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern int EndPage(IntPtr dc);
+    [DllImport("gdi32.dll")] static extern int GetDeviceCaps(IntPtr dc, int index);
+    [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] static extern int StretchDIBits(IntPtr dc, int x, int y, int width, int height, int sx, int sy, int sw, int sh, IntPtr bits, ref BitmapInfoHeader info, uint usage, uint rop);
+    [DllImport("winspool.drv", CharSet = CharSet.Unicode, EntryPoint = "EnumPrintersW", SetLastError = true)] static extern bool EnumPrinters(int flags, string? name, int level, IntPtr buffer, int size, out int needed, out int returned);
+    [DllImport("winspool.drv", CharSet = CharSet.Unicode, EntryPoint = "GetDefaultPrinterW", SetLastError = true)] static extern bool GetDefaultPrinter(char[]? buffer, ref int size);
+    public static IReadOnlyList<string> Printers()
+    {
+        const int Local = 2, Connections = 4, InfoSize = 3; // PRINTER_INFO_4: name, server, attributes
+        EnumPrinters(Local | Connections, null, 4, IntPtr.Zero, 0, out var needed, out _);
+        if (needed == 0) return [];
+        var buffer = Marshal.AllocHGlobal(needed);
+        try
+        {
+            if (!EnumPrinters(Local | Connections, null, 4, buffer, needed, out _, out var count)) return [];
+            return Enumerable.Range(0, count).Select(i => Marshal.PtrToStringUni(Marshal.ReadIntPtr(buffer, i * InfoSize * IntPtr.Size))).OfType<string>().Order(StringComparer.CurrentCultureIgnoreCase).ToList();
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+    public static string? DefaultPrinter()
+    {
+        var size = 0; GetDefaultPrinter(null, ref size);
+        if (size == 0) return null;
+        var buffer = new char[size];
+        return GetDefaultPrinter(buffer, ref size) ? new string(buffer, 0, Math.Max(0, size - 1)) : null;
+    }
+    const int HorzRes = 8, VertRes = 10, LogPixelsX = 88, LogPixelsY = 90, PhysicalWidth = 110, PhysicalHeight = 111, PhysicalOffsetX = 112, PhysicalOffsetY = 113;
+    // output: optional file for drivers such as "Microsoft Print to PDF" (used for verification).
+    public static void Print(LabelProfile profile, PrintPlan plan, string printer, string? output = null)
+    {
+        var dc = CreateDC("WINSPOOL", printer, null, IntPtr.Zero);
+        if (dc == IntPtr.Zero) throw new InvalidOperationException("Tiskárnu „" + printer + "“ nelze otevřít.");
+        try
+        {
+            float dpiX = GetDeviceCaps(dc, LogPixelsX), dpiY = GetDeviceCaps(dc, LogPixelsY);
+            float paperWidth = GetDeviceCaps(dc, PhysicalWidth) * 25.4f / dpiX, paperHeight = GetDeviceCaps(dc, PhysicalHeight) * 25.4f / dpiY;
+            if (Math.Abs(paperWidth - profile.PaperWidth) > 3 || Math.Abs(paperHeight - profile.PaperHeight) > 3)
+                throw new InvalidOperationException($"Tiskárna má nastavený papír {paperWidth:0}×{paperHeight:0} mm, profil archu {profile.PaperWidth:0}×{profile.PaperHeight:0} mm. Změňte formát papíru ve vlastnostech tiskárny.");
+            int width = GetDeviceCaps(dc, HorzRes), height = GetDeviceCaps(dc, VertRes);
+            float offsetX = GetDeviceCaps(dc, PhysicalOffsetX), offsetY = GetDeviceCaps(dc, PhysicalOffsetY);
+            // Render at most 300 DPI to keep the page bitmap small; GDI scales it to the device.
+            var scale = Math.Min(1f, 300f / Math.Max(dpiX, dpiY));
+            int bitmapWidth = (int)Math.Ceiling(width * scale), bitmapHeight = (int)Math.Ceiling(height * scale);
+            var info = new DocInfo { cbSize = Marshal.SizeOf<DocInfo>(), lpszDocName = "SimpleDMS – štítky", lpszOutput = output };
+            if (StartDoc(dc, ref info) <= 0) throw new InvalidOperationException("Tiskárna odmítla tiskovou úlohu.");
+            try
+            {
+                using var renderer = new LabelRenderer();
+                foreach (var page in plan.Pages)
+                {
+                    if (StartPage(dc) <= 0) throw new InvalidOperationException("Tiskárna odmítla stránku.");
+                    using var bitmap = new SKBitmap(new SKImageInfo(bitmapWidth, bitmapHeight, SKColorType.Bgra8888, SKAlphaType.Premul));
+                    using (var canvas = new SKCanvas(bitmap))
+                    {
+                        // Millimetres from the paper edge → device pixels of the printable area.
+                        canvas.Clear(SKColors.White); canvas.Scale(scale); canvas.Translate(-offsetX, -offsetY); canvas.Scale(dpiX / 25.4f, dpiY / 25.4f);
+                        renderer.Draw(canvas, profile, page);
+                    }
+                    var header = new BitmapInfoHeader { biSize = Marshal.SizeOf<BitmapInfoHeader>(), biWidth = bitmapWidth, biHeight = -bitmapHeight, biPlanes = 1, biBitCount = 32 };
+                    SetStretchBltMode(dc, 3);
+                    if (StretchDIBits(dc, 0, 0, width, height, 0, 0, bitmapWidth, bitmapHeight, bitmap.GetPixels(), ref header, 0, 0x00CC0020) == 0)
+                        throw new InvalidOperationException("Stránku štítků nelze předat tiskárně.");
+                    if (EndPage(dc) <= 0) throw new InvalidOperationException("Tiskárna odmítla stránku.");
+                }
+                if (EndDoc(dc) <= 0) throw new InvalidOperationException("Tisk nebyl dokončen.");
+            }
+            catch { AbortDoc(dc); throw; }
+        }
+        finally { DeleteDC(dc); }
     }
 }
