@@ -82,10 +82,8 @@ public sealed class MainWindow : Window
         var bottom = Stack(status, Row(cancel)); bottom.Margin = new(0, 12, 0, 0); DockPanel.SetDock(bottom, Dock.Bottom); body.Children.Add(bottom);
         body.Children.Add(tabs); Content = body;
 
-        var drive = DetectGoogleDrive();
-        syncClient.Text = OperatingSystem.IsWindows()
-            ? drive != null ? $"Google Drive for desktop je připojen jako {drive}" : "Google Drive for desktop nebyl nalezen."
-            : "Na Linuxu použijte Insync nebo rclone (rclone bisync / rclone mount) se složkou archivu.";
+        syncClient.Text = OperatingSystem.IsWindows() ? "Hledám Google Drive for desktop…" : "Na Linuxu použijte Insync nebo rclone (rclone bisync / rclone mount) se složkou archivu.";
+        rootPath.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; await Run(DiscoverAsync); } };
         var archivePanel = Stack(
             Heading("1. Synchronizovaná složka"),
             Text("SimpleDMS pracuje s místní složkou, kterou na pozadí synchronizuje Google Drive for desktop (případně Insync nebo rclone). Úpravy jsou okamžité a fungují i offline. Nahrání na Google Drive obstará synchronizační klient, takže aplikace nepotřebuje přihlášení ke Google."),
@@ -93,8 +91,8 @@ public sealed class MainWindow : Window
             Row(Action("Stáhnout Google Drive for desktop", () => { GoogleAuth.OpenBrowser("https://www.google.com/drive/download/"); return Task.CompletedTask; })),
             Text("Sdílenou složku archivu nejprve na webu Google Drive přidejte do Můj disk (pravé tlačítko → Uspořádat → Přidat zástupce do Můj disk). Pak se objeví na disku G: ve složce Můj disk. Chcete-li archiv používat i bez internetu, nastavte u složky v Průzkumníku: pravé tlačítko → Offline přístup → Dostupné offline."),
             Heading("2. Složka archivu"),
-            Text("Vyberte složku, ve které leží registr (např. G:\\Můj disk\\Databáze dokumentů). Pokud v ní je jediný archiv, otevře se automaticky."),
-            Grid2(rootPath, Action("Vybrat složku…", ChooseRootAsync)),
+            Text("Vyberte složku, ve které leží registr (např. G:\\Můj disk\\Databáze dokumentů), nebo cestu vložte a stiskněte Enter. Pokud v ní je jediný archiv, otevře se automaticky."),
+            Grid2(rootPath, Row(Action("Načíst", DiscoverAsync), Action("Vybrat složku…", ChooseRootAsync))),
             Row(archiveChoices, Action("Otevřít vybraný archiv", OpenChosenAsync)),
             Row(archiveName, Action("Založit nový archiv v této složce", CreateArchiveAsync)),
             Heading("3. Volitelně: Google ID pro odkazy a QR kódy"),
@@ -120,7 +118,7 @@ public sealed class MainWindow : Window
             Form(("Kategorie", Row(newCategory, nextCode)), ("Název", newTitle), ("Autor / účastníci", newAuthor), ("Reference", newReference),
                 ("Platnost", Row(newValidity, Action("Bez data", () => { newValidity.SelectedDate = null; return Task.CompletedTask; }))), ("Poznámky", newNotes), ("", newPending), ("Přílohy", attachments)),
             saveDocument));
-        newCategory.SelectionChanged += (_, _) => UpdateNextCode();
+        newCategory.SelectionChanged += (_, _) => _ = UpdateNextCodeAsync();
         DragDrop.SetAllowDrop(filesList, true);
         DragDrop.AddDragOverHandler(filesList, (_, e) => { e.DragEffects = e.DataTransfer.TryGetFiles() != null ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; });
         DragDrop.AddDropHandler(filesList, (_, e) => { foreach (var file in e.DataTransfer.TryGetFiles() ?? []) { var path = file.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); e.Handled = true; });
@@ -171,16 +169,21 @@ public sealed class MainWindow : Window
         if (settings.Archive != null)
         {
             rootPath.Text = settings.Archive.Root; driveUrl.Text = settings.Archive.DriveRootId is { Length: > 0 } id ? "https://drive.google.com/drive/folders/" + id : "";
-            LoadCatalog(); if (catalog != null) tabs.SelectedIndex = 1;
+            status.Text = "Načítám registr…";
         }
-        else
-        {
-            if (drive != null) rootPath.Text = Path.Combine(drive, Directory.Exists(Path.Combine(drive, "Můj disk")) ? "Můj disk" : "My Drive");
-            status.Text = migrated ? "SimpleDMS nyní pracuje s místní synchronizovanou složkou. Na kartě Archiv vyberte složku archivu." : "Na kartě Archiv vyberte složku archivu.";
-            UpdateArchive();
-        }
+        else status.Text = migrated ? "SimpleDMS nyní pracuje s místní synchronizovanou složkou. Na kartě Archiv vyberte složku archivu." : "Na kartě Archiv vyberte složku archivu.";
+        UpdateArchive();
+        // Everything touching the synchronized drive runs off the UI thread: a streaming Drive
+        // or a disconnected network disk can take a long time to answer.
         Opened += async (_, _) =>
         {
+            if (settings.Archive != null) { await LoadCatalogAsync(); if (catalog != null) tabs.SelectedIndex = 1; }
+            if (OperatingSystem.IsWindows())
+            {
+                var drive = await DetectGoogleDriveAsync();
+                syncClient.Text = drive != null ? $"Google Drive for desktop je připojen jako {drive}" : "Google Drive for desktop nebyl nalezen. Po instalaci a přihlášení aplikaci restartujte.";
+                if (drive != null && settings.Archive == null && string.IsNullOrWhiteSpace(rootPath.Text)) rootPath.Text = Path.Combine(drive, "Můj disk");
+            }
             await LoadPrintersAsync();
             var p = settings.Archive;
             if (p?.DriveLinked != true || settings.ClientId.Length == 0) return;
@@ -239,18 +242,30 @@ public sealed class MainWindow : Window
         if (!carry) { settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; settings.PendingPrint = settings.ArchivePrintPlans.GetValueOrDefault(p.Key); }
         Save(); UpdateLabels();
     }
-    static string? DetectGoogleDrive()
+    // Runs a file-system probe in the background; a drive that does not answer counts as unavailable.
+    static async Task<T?> Probe<T>(Func<T> work, int seconds = 5)
     {
-        if (!OperatingSystem.IsWindows()) return null;
-        foreach (var drive in DriveInfo.GetDrives())
+        try { return await Task.Run(work).WaitAsync(TimeSpan.FromSeconds(seconds)); }
+        catch (Exception e) when (e is TimeoutException or IOException or UnauthorizedAccessException) { return default; }
+    }
+    static Task<string?> DetectGoogleDriveAsync() => Probe(() =>
+    {
+        // Network drives are skipped: a disconnected one blocks IsReady for a long time.
+        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType is not (DriveType.Network or DriveType.CDRom)))
             try { if (drive.IsReady && drive.VolumeLabel == "Google Drive") return drive.RootDirectory.FullName; } catch (IOException) { } catch (UnauthorizedAccessException) { }
         return null;
-    }
-    void LoadCatalog()
+    });
+    async Task LoadCatalogAsync()
     {
         var p = settings.Archive;
         if (p == null) { catalog = null; UpdateArchive(); return; }
-        try { (catalog, cached) = service.Load(p); stamp = ArchiveService.Stamp(p); if (cached) status.Text = "Složka archivu není dostupná. Zobrazena poslední načtená kopie registru, úpravy nejsou možné."; }
+        try
+        {
+            var result = await Task.Run(() => (Load: service.Load(p), Stamp: ArchiveService.Stamp(p)));
+            if (settings.Archive != p) return;
+            (catalog, cached) = result.Load; stamp = result.Stamp;
+            status.Text = cached ? "Složka archivu není dostupná. Zobrazena poslední načtená kopie registru, úpravy nejsou možné." : status.Text == "Načítám registr…" ? "" : status.Text;
+        }
         catch (Exception e) { catalog = null; status.Text = e.Message; }
         UpdateArchive();
     }
@@ -271,7 +286,7 @@ public sealed class MainWindow : Window
     {
         if (linking || busy || !driveOnline || settings.Archive?.DriveLinked != true || settings.ReadOnly || cached) return;
         linking = true;
-        try { var p = settings.Archive; if (await service.LinkDriveIdsAsync(p, new DriveClient(auth)) > 0 && settings.Archive == p) LoadCatalog(); }
+        try { var p = settings.Archive; if (await service.LinkDriveIdsAsync(p, new DriveClient(auth)) > 0 && settings.Archive == p) await LoadCatalogAsync(); }
         catch (Exception e) { if (!busy) driveStatus.Text = "Doplnění Google ID se nezdařilo: " + e.Message; }
         finally { linking = false; }
     }
@@ -298,13 +313,15 @@ public sealed class MainWindow : Window
         newCategory.ItemsSource = options; newCategory.SelectedItem = options.FirstOrDefault(x => x.Code == chosen) ?? options.FirstOrDefault();
         newAuthor.ItemsSource = catalog?.Records.Select(r => r.Author.Trim()).Where(x => x.Length > 0).Distinct().Order().ToList() ?? [];
         saveDocument.IsEnabled = CanWrite && !busy;
-        UpdateNextCode(); Filter();
+        _ = UpdateNextCodeAsync(); Filter();
     }
-    void UpdateNextCode()
+    int previewVersion;
+    // Listing the documents folder may wait for the sync client, so the preview is computed in the background.
+    async Task UpdateNextCodeAsync()
     {
-        var p = settings.Archive;
-        var code = p != null && catalog != null && newCategory.SelectedItem is CategoryOption c ? ArchiveService.PreviewCode(catalog, p, c.Code) : "";
-        nextCode.Text = code.Length > 0 ? "Přidělí se číslo " + code : "";
+        var version = ++previewVersion; var p = settings.Archive; var current = catalog;
+        var code = p != null && current != null && newCategory.SelectedItem is CategoryOption c ? await Probe(() => ArchiveService.PreviewCode(current, p, c.Code), 30) ?? "" : "";
+        if (version == previewVersion) nextCode.Text = code.Length > 0 ? "Přidělí se číslo " + code : "";
     }
     void Filter()
     {
@@ -330,7 +347,8 @@ public sealed class MainWindow : Window
     }
     async Task ChooseRootAsync()
     {
-        var start = Directory.Exists(rootPath.Text) ? await StorageProvider.TryGetFolderFromPathAsync(rootPath.Text!) : null;
+        var current = rootPath.Text?.Trim() ?? "";
+        var start = current.Length > 0 && await Probe(() => Directory.Exists(current), 3) ? await StorageProvider.TryGetFolderFromPathAsync(current) : null;
         var folders = await StorageProvider.OpenFolderPickerAsync(new() { Title = "Složka archivu (obsahuje registr XLSX a složku dokumentů)", AllowMultiple = false, SuggestedStartLocation = start });
         if (folders.Count == 0) return;
         rootPath.Text = folders[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní složku.");
@@ -361,7 +379,7 @@ public sealed class MainWindow : Window
         var p = await Task.Run(() => service.Open(root, choice, !settings.ReadOnly));
         if (settings.Archive?.Key == p.Key) p = p with { DriveRootId = settings.Archive.DriveRootId, AccountId = settings.Archive.AccountId, AccountEmail = settings.Archive.AccountEmail };
         else driveOnline = false;
-        SetArchive(p); LoadCatalog(); if (catalog != null) tabs.SelectedIndex = 1;
+        SetArchive(p); await LoadCatalogAsync(); if (catalog != null) tabs.SelectedIndex = 1;
         driveUrl.Text = p.DriveRootId is { Length: > 0 } id ? "https://drive.google.com/drive/folders/" + id : "";
         status.Text = $"Archiv {p.Name} otevřen ({catalog?.Records.Count ?? 0} dokumentů).";
     }
@@ -381,7 +399,7 @@ public sealed class MainWindow : Window
         RequireWrite();
         status.Text = "Doplňuji Google ID…";
         var count = await service.LinkDriveIdsAsync(p, new DriveClient(auth), Token);
-        if (count > 0) LoadCatalog();
+        if (count > 0) await LoadCatalogAsync();
         if (report) status.Text = count > 0 ? $"Doplněno {count} Google ID." : "Nic nového k doplnění. Nově přidané složky se objeví, až je synchronizační klient nahraje.";
     }
     Task UnlinkDriveAsync()
@@ -402,21 +420,21 @@ public sealed class MainWindow : Window
         status.Text = "Ukládání dokumentu…";
         var record = await service.AddAsync(Profile(), draft, attachmentPaths, null, Progress(), Token);
         Queue(record); attachmentPaths.Clear(); UpdateFiles(); newTitle.Text = ""; newReference.Text = ""; newNotes.Text = ""; newValidity.SelectedDate = null; newPending.IsChecked = false;
-        LoadCatalog(); tabs.SelectedIndex = 1; query.Text = ""; records.SelectedItem = (records.ItemsSource as IEnumerable<DocumentRecord>)?.FirstOrDefault(x => x.Code == record.Code);
+        await LoadCatalogAsync(); tabs.SelectedIndex = 1; query.Text = ""; records.SelectedItem = (records.ItemsSource as IEnumerable<DocumentRecord>)?.FirstOrDefault(x => x.Code == record.Code);
         status.Text = $"Dokument {record.Code} uložen. Štítek je ve frontě." + (record.Electronic ? " Přílohy na Google Drive nahraje synchronizační klient." : "");
     }
-    async Task TogglePendingAsync() { RequireWrite(); var record = Selected(); await service.SetPendingAsync(Profile(), record.Code, !record.Pending, Token); LoadCatalog(); }
+    async Task TogglePendingAsync() { RequireWrite(); var record = Selected(); await service.SetPendingAsync(Profile(), record.Code, !record.Pending, Token); await LoadCatalogAsync(); }
     async Task AttachAsync()
     {
         RequireWrite(); var r = Selected();
         var picked = await StorageProvider.OpenFilePickerAsync(new() { Title = "Doplnit přílohy k " + r.Code, AllowMultiple = true }); if (picked.Count == 0) return;
         await service.AddAsync(Profile(), new(r.Category, r.Title), picked.Select(x => x.TryGetLocalPath() ?? throw new InvalidOperationException("Příloha není místní.")), r.Code, Progress(), Token);
-        LoadCatalog(); status.Text = $"Přílohy doplněny k dokumentu {r.Code}.";
+        await LoadCatalogAsync(); status.Text = $"Přílohy doplněny k dokumentu {r.Code}.";
     }
-    Task OpenSelectedAsync()
+    async Task OpenSelectedAsync()
     {
-        var r = Selected(); var local = service.LocalPath(Profile(), r);
-        if (local != null) { GoogleAuth.OpenBrowser(local); return Task.CompletedTask; }
+        var r = Selected(); var p = Profile(); var local = await Task.Run(() => service.LocalPath(p, r), Token);
+        if (local != null) { GoogleAuth.OpenBrowser(local); return; }
         throw new InvalidOperationException(!r.Electronic ? "Dokument existuje pouze v papírovém archivu." : cached ? "Složka archivu není dostupná." : $"Přílohy nebyly ve složce {Profile().DocumentsPath} nalezeny. Zkontrolujte synchronizaci, případně je otevřete na Google Drive.");
     }
     Task OpenDriveAsync()

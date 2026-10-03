@@ -15,6 +15,11 @@ public static class TestApp
 }
 public sealed class UiTests
 {
+    static void WaitFor(Func<bool> condition)
+    {
+        for (var i = 0; i < 200 && !condition(); i++) { Avalonia.Threading.Dispatcher.UIThread.RunJobs(); Thread.Sleep(10); }
+        Assert.True(condition());
+    }
     [Fact]
     public async Task OfflineArchiveLoadsAndFiltersInRealControls()
     {
@@ -29,10 +34,10 @@ public sealed class UiTests
             File.WriteAllBytes(Path.Combine(store.ArchiveDirectory(profile), "catalog.xlsx"), book.Save());
             var window = new MainWindow(store); window.Show();
             Assert.Equal("Zkušební archiv — SimpleDMS", window.Title);
-            var text = window.GetVisualDescendants().OfType<TextBox>().Single(x => x.PlaceholderText == "Číslo, název, autor, poznámky…");
+            var text = window.GetLogicalDescendants().OfType<TextBox>().Single(x => x.PlaceholderText == "Číslo, název, autor, poznámky…");
             text.Text = "zadost";
-            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-            Assert.Contains(window.GetVisualDescendants().OfType<TextBlock>(), t => t.Text == "1 z 2 dokumentů");
+            WaitFor(() => window.GetLogicalDescendants().OfType<TextBlock>().Any(t => t.Text == "1 z 2 dokumentů"));
+            Assert.Contains(window.GetLogicalDescendants().OfType<TextBlock>(), t => t.Text == "1 z 2 dokumentů");
             window.Close();
         }, CancellationToken.None);
     }
@@ -52,7 +57,9 @@ public sealed class UiTests
             var book = new WorkbookCatalog(bytes); book.Append("100001", new("10", "Nájemní smlouva", Author: "Novák", Validity: "1.1.2030"), ""); book.Append("110001", new("11", "Zpravodaj"), "");
             File.WriteAllBytes(profile.WorkbookPath, book.Save());
             store.Write("settings.json", new AppSettings { Archive = profile });
-            var window = new MainWindow(store); window.Show(); Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var window = new MainWindow(store); window.Show();
+            // The register and the next-number preview load in the background.
+            WaitFor(() => window.GetLogicalDescendants().OfType<TextBlock>().Any(t => t.Text == "Přidělí se číslo 100002"));
             var combos = window.GetLogicalDescendants().OfType<ComboBox>().ToList();
             Assert.Contains(combos, c => c.SelectedItem?.ToString() == "10 – smlouvy" && c.ItemsSource!.Cast<object>().Select(x => x.ToString()).SequenceEqual(["10 – smlouvy", "11 – časopisy"]));
             Assert.Contains(window.GetLogicalDescendants().OfType<TextBlock>(), t => t.Text == "Přidělí se číslo 100002");
