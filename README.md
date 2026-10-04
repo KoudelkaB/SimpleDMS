@@ -10,10 +10,10 @@ souborové operace a fungují i offline; nahrání do cloudu obstará synchroniz
 
 - Hledání bez diakritiky, filtry podle kategorií s názvy z listu „Kódování dokumentů“.
 - Stabilní šestimístné číslo: dvě číslice kategorie a čtyři pořadí v kategorii.
-- Přidání souborů/složek, doplnění skenů k původnímu číslu.
+- Dokument jako soubor `číslo.přípona` nebo složka `číslo` jako v původní evidenci; doplnění skenů k původnímu číslu.
 - Volitelné propojení s Google účtem (jen čtení názvů a ID) doplní Q (Drive ID),
   takže odkaz v M a QR kód na štítku vedou na Google Drive.
-- Rozpracovanost včetně kompatibility s oranžovým celým řádkem původního XLSX.
+- Rozpracovanost jako oranžový celý řádek, stejně jako v původním XLSX.
 - Zálohy XLSX a ochrana proti zápisu do registru otevřeného v Excelu.
 - Štítky s QR, vlastní grid a kalibrace; pokračování na použitých arších,
   ruční pozice, výběr tiskárny a potvrzení skutečného výsledku tisku.

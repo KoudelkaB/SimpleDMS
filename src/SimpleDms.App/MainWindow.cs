@@ -112,8 +112,8 @@ public sealed class MainWindow : Window
 
         saveDocument = Action("Uložit dokument a připravit štítek", SaveDocumentAsync);
         saveDocument.Classes.Add("accent");
-        var attachments = Stack(Row(Action("Vybrat soubory", PickAttachmentsAsync), Action("Přidat složku", PickFolderAsync), Action("Vyprázdnit", () => { attachmentPaths.Clear(); UpdateFiles(); return Task.CompletedTask; })),
-            filesList, Text("Soubory nebo složky lze přetáhnout do seznamu. Vnořené složky se zachovají. Papírový dokument může být bez příloh."));
+        var attachments = Stack(Row(Action("Vybrat soubory", PickAttachmentsAsync), Action("Vyprázdnit", () => { attachmentPaths.Clear(); UpdateFiles(); return Task.CompletedTask; })),
+            filesList, Text("Soubory lze také přetáhnout do seznamu. Jeden soubor se uloží jako číslo dokumentu s příponou (např. 100242.pdf), více souborů do složky pojmenované číslem. Papírový dokument může být bez příloh."));
         AddTab("Přidat dokument", Stack(Heading("Nový dokument"),
             Form(("Kategorie", Row(newCategory, nextCode)), ("Název", newTitle), ("Autor / účastníci", newAuthor), ("Reference", newReference),
                 ("Platnost", Row(newValidity, Action("Bez data", () => { newValidity.SelectedDate = null; return Task.CompletedTask; }))), ("Poznámky", newNotes), ("", newPending), ("Přílohy", attachments)),
@@ -121,7 +121,13 @@ public sealed class MainWindow : Window
         newCategory.SelectionChanged += (_, _) => _ = UpdateNextCodeAsync();
         DragDrop.SetAllowDrop(filesList, true);
         DragDrop.AddDragOverHandler(filesList, (_, e) => { e.DragEffects = e.DataTransfer.TryGetFiles() != null ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; });
-        DragDrop.AddDropHandler(filesList, (_, e) => { foreach (var file in e.DataTransfer.TryGetFiles() ?? []) { var path = file.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); e.Handled = true; });
+        DragDrop.AddDropHandler(filesList, (_, e) =>
+        {
+            foreach (var path in (e.DataTransfer.TryGetFiles() ?? []).Select(x => x.TryGetLocalPath()).OfType<string>())
+                if (Directory.Exists(path)) status.Text = $"Složku {Path.GetFileName(path)} nelze přidat. Přetáhněte soubory; více souborů se uloží do složky dokumentu.";
+                else if (!attachmentPaths.Contains(path)) attachmentPaths.Add(path);
+            UpdateFiles(); e.Handled = true;
+        });
 
         // Queue and print actions stay visible on the left; the sheet layout scrolls on the right.
         var printPanel = Stack(Heading("Fronta štítků"), queueList, Row(Action("Odebrat vybraný", RemoveLabelAsync), Action("Vyprázdnit frontu", ClearQueueAsync)),
@@ -268,6 +274,11 @@ public sealed class MainWindow : Window
         }
         catch (Exception e) { catalog = null; status.Text = e.Message; }
         UpdateArchive();
+        if (catalog?.RemovedStateColumn == true && CanWrite)
+        {
+            try { await service.RewriteAsync(p); await LoadCatalogAsync(); status.Text = "Z registru byl odstraněn sloupec R „Stav zpracování“. Rozpracované dokumenty označuje jen oranžový řádek."; }
+            catch (InvalidOperationException e) { status.Text = "Sloupec R se odstraní při příštím zápisu. " + e.Message; }
+        }
     }
     async Task TickAsync()
     {
@@ -408,7 +419,6 @@ public sealed class MainWindow : Window
         status.Text = "Propojení s Google Drive zrušeno. Archiv dál funguje přes synchronizovanou složku."; return Task.CompletedTask;
     }
     async Task PickAttachmentsAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Přílohy dokumentu", AllowMultiple = true }); foreach (var file in files) { var path = file.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); }
-    async Task PickFolderAsync() { var folders = await StorageProvider.OpenFolderPickerAsync(new() { Title = "Složka s přílohami", AllowMultiple = true }); foreach (var folder in folders) { var path = folder.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); }
     void UpdateFiles() => filesList.ItemsSource = attachmentPaths.Select(Path.GetFileName).ToList();
     Progress<string> Progress() => new(text => status.Text = text);
     async Task SaveDocumentAsync()
@@ -491,22 +501,49 @@ public sealed class MainWindow : Window
         Save(); UpdateLabels();
         var withoutLink = settings.Labels.Qr ? settings.PendingPrint.Placements.Count(x => x.Label.Url.Length == 0) : 0;
         var note = withoutLink > 0 ? $" {withoutLink} štítků zatím nemá Google ID, jejich QR obsahuje evidenční číslo." : "";
-        if (print) { status.Text = "Tisk…"; status.Text = await LabelPrinter.PrintAsync(settings.Labels, settings.PendingPrint, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + " Po tisku potvrďte skutečně využité nálepky." + note; return; }
+        if (print)
+        {
+            status.Text = "Tisk…"; status.Text = await LabelPrinter.PrintAsync(settings.Labels, settings.PendingPrint, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + note;
+            await ConfirmPrintAsync(); return;
+        }
         var folder = Path.Combine(store.Root, "labels"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, settings.PendingPrint.Id + ".pdf");
         LabelPdf.Export(path, settings.Labels, settings.PendingPrint);
         GoogleAuth.OpenBrowser(path); status.Text = "PDF otevřeno. Při tisku z PDF zvolte měřítko 100 %, bez přizpůsobení na stránku. Potom potvrďte výsledek." + note;
     }
+    enum PrintOutcome { Later, All, Selection, Nothing }
+    // Opens right after printing with every label preselected, so a successful print takes one click (or Enter).
     async Task ConfirmPrintAsync()
     {
-        var plan = settings.PendingPrint ?? throw new InvalidOperationException("Není připravena tisková úloha."); var panel = Stack(Text("Zaškrtněte pouze skutečně vytištěné nálepky. Při chybě tisku ponechte ostatní ve frontě."));
-        var picks = new Dictionary<LabelPlacement, CheckBox>(); foreach (var placement in plan.Placements) { var c = new CheckBox { Content = $"Arch {placement.Page + 1}, pozice {placement.Position / settings.Labels.Columns + 1}:{placement.Position % settings.Labels.Columns + 1} — {placement.Label.Code}" }; picks[placement] = c; panel.Children.Add(c); }
-        var dialog = new Window { Title = "Potvrdit výsledek tisku", Width = 550, Height = 600 }; var all = new Button { Content = "Označit všechny vytištěné" }; all.Click += (_, _) => { foreach (var c in picks.Values) c.IsChecked = true; }; panel.Children.Add(all);
-        var accept = new Button { Content = "Uložit výsledek" }; accept.Click += (_, _) => dialog.Close(true); panel.Children.Add(accept); dialog.Content = new ScrollViewer { Content = panel, Margin = new Thickness(20) };
-        if (await dialog.ShowDialog<bool>(this) != true) return; var confirmed = picks.Where(x => x.Value.IsChecked == true).Select(x => x.Key).ToList();
+        var plan = settings.PendingPrint ?? throw new InvalidOperationException("Není připravena tisková úloha.");
+        var columns = settings.Labels.Columns;
+        var picks = plan.Placements.ToDictionary(x => x, x => new CheckBox
+        {
+            IsChecked = true,
+            Content = (plan.Pages.Count > 1 ? $"Arch {x.Page + 1}, " : "") + $"pozice {x.Position / columns + 1}:{x.Position % columns + 1} — {x.Label.Code} {x.Label.Title}"
+        });
+        var outcome = PrintOutcome.Later;
+        var dialog = new Window { Title = "Výsledek tisku", Width = 640, Height = 480, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        Button Choice(string text, PrintOutcome value) { var b = new Button { Content = text }; b.Click += (_, _) => { outcome = value; dialog.Close(); }; return b; }
+        var all = Choice($"Ano, vytisklo se vše ({picks.Count})", PrintOutcome.All); all.Classes.Add("accent"); all.IsDefault = true;
+        var selection = Choice("Uložit jen zaškrtnuté", PrintOutcome.Selection);
+        var later = Choice("Rozhodnu později", PrintOutcome.Later); later.IsCancel = true;
+        // Unticking a label means a partial result, so Enter then saves the selection instead of "all".
+        foreach (var box in picks.Values) box.IsCheckedChanged += (_, _) => { var complete = picks.Values.All(x => x.IsChecked == true); all.IsDefault = complete; selection.IsDefault = !complete; };
+        var header = Stack(Heading("Vytiskly se všechny štítky správně?"), Text("Pokud se některé nepovedly, zrušte u nich zaškrtnutí a zvolte Uložit jen zaškrtnuté. Nevytištěné štítky zůstanou ve frontě a jejich pozice na archu volné."));
+        var buttons = new WrapPanel(); foreach (var b in new[] { all, selection, Choice("Nic se nevytisklo", PrintOutcome.Nothing), later }) { b.Margin = new(0, 8, 8, 0); buttons.Children.Add(b); }
+        var layout = new DockPanel { Margin = new Thickness(20) };
+        DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header); DockPanel.SetDock(buttons, Dock.Bottom); layout.Children.Add(buttons);
+        layout.Children.Add(new ScrollViewer { Content = Stack([.. picks.Values]), Margin = new(0, 8) });
+        dialog.Content = layout;
+        await dialog.ShowDialog(this);
+        if (outcome == PrintOutcome.Later) { status.Text = "Výsledek tisku můžete potvrdit později tlačítkem Potvrdit výsledek tisku."; return; }
+        if (outcome == PrintOutcome.Nothing) { await CancelPrintAsync(); status.Text = "Nic nebylo vytištěno. Štítky zůstávají ve frontě, pozice archu jsou volné."; return; }
+        var confirmed = outcome == PrintOutcome.All ? plan.Placements.ToList() : picks.Where(x => x.Value.IsChecked == true).Select(x => x.Key).ToList();
         var result = LabelPlanner.Confirm(settings.Labels, settings.Sheet, plan, confirmed, settings.LabelQueue);
         foreach (var page in plan.Pages.Select((p, i) => (Page: p, Index: i)))
         { var sheet = settings.LabelSheets.GetValueOrDefault(page.Page.SheetId) ?? new() { Id = page.Page.SheetId, ProfileKey = plan.ProfileKey }; foreach (var p in confirmed.Where(x => x.Page == page.Index)) sheet.Used.Add(p.Position); settings.LabelSheets[sheet.Id] = sheet; }
-        settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; settings.PendingPrint = null; Save(); UpdateLabels(); status.Text = $"Potvrzeno {confirmed.Count} nálepek. Zbytek zůstává ve frontě.";
+        settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; settings.PendingPrint = null; Save(); UpdateLabels();
+        status.Text = $"Potvrzeno {confirmed.Count} z {plan.Placements.Count} štítků." + (result.Queue.Count > 0 ? $" Ve frontě zůstává {result.Queue.Count}." : "");
     }
     Task CancelPrintAsync() { settings.PendingPrint = null; Save(); UpdateLabels(); status.Text = "Tisková úloha zrušena; pozice archu zůstaly zachované."; return Task.CompletedTask; }
     void ImportOAuth(string json) { var root = JsonDocument.Parse(json).RootElement; var item = root.TryGetProperty("installed", out var installed) ? installed : root; settings.ClientId = item.GetProperty("client_id").GetString() ?? ""; settings.ClientSecret = item.TryGetProperty("client_secret", out var s) ? s.GetString() ?? "" : ""; }

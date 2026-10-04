@@ -18,6 +18,7 @@ public sealed class WorkbookCatalog
     readonly string sheetPath;
     readonly Dictionary<string, int[]> originalStyles;
     public List<string> Warnings { get; } = [];
+    public bool RemovedStateColumn { get; }
     public IReadOnlyList<DocumentRecord> Records { get; private set; } = [];
     public IReadOnlyDictionary<string, string> Categories { get; private set; } = new Dictionary<string, string>();
     public WorkbookCatalog(byte[] bytes)
@@ -47,6 +48,14 @@ public sealed class WorkbookCatalog
             if (Value(Cell(first, ((char)('A' + i)).ToString())) != "N" + (i + 1))
                 throw new InvalidOperationException("List Databáze nemá očekávané hlavičky N1–N6 v A–F.");
         if (Value(Cell(first, "G")) != "Název") throw new InvalidOperationException("V G chybí hlavička Název.");
+        // Earlier SimpleDMS versions added a "Stav zpracování" column R. The register marks work in
+        // progress only by the orange row, so the column is dropped; foreign values in R are kept.
+        if (Value(Cell(first, "R")) == "Stav zpracování")
+        {
+            foreach (var cell in sheet.Descendants(S + "c").Where(c => Regex.Replace((string?)c.Attribute("r") ?? "", "[0-9]", "") == "R" && Value(c) is "" or "Stav zpracování" or "Rozpracovaný" or "Dokončený").ToList())
+                cell.Remove();
+            RemovedStateColumn = true;
+        }
         var cats = wb.Descendants(S + "sheet").FirstOrDefault(x => (string?)x.Attribute("name") == "Kódování dokumentů");
         var categories = new Dictionary<string, string>();
         if (cats != null)
@@ -119,11 +128,8 @@ public sealed class WorkbookCatalog
                 continue;
             }
             var code = string.Concat(digits);
-            var state = Value(Cell(row, "R"));
-            var orange = "ABCDEFGHIJKLMNOPQ".All(c => Fill(Cell(row, c.ToString())) == "FFFFC000");
-            var pending = state == "Rozpracovaný" || (state.Length == 0 && orange);
-            if (state.Length > 0 && state is not ("Rozpracovaný" or "Dokončený")) Warnings.Add($"{code}: neznámý stav zpracování.");
-            if (state.Length > 0 && pending != orange) Warnings.Add($"{code}: stav a oranžová výplň se liší.");
+            // Work in progress is marked only by the whole row A–Q filled orange.
+            var pending = "ABCDEFGHIJKLMNOPQ".All(c => Fill(Cell(row, c.ToString())) == "FFFFC000");
             var p = Value(Cell(row, "P"));
             if (p.Length > 0 && p != code) Warnings.Add($"{code}: souhrnné číslo v P se liší od A–F.");
             // M is usually a (shared) HYPERLINK formula built from Q, so Q is the reliable source of the link.
@@ -222,7 +228,7 @@ public sealed class WorkbookCatalog
         if (Records.Count > 0)
         {
             var previous = Row(Records.MaxBy(r => r.Row)!.Row);
-            foreach (var cell in previous.Elements(S + "c").Where(c => (string?)c.Attribute("s") != null && ColumnIndex(Regex.Replace((string)c.Attribute("r")!, "[0-9]", "")) <= 18))
+            foreach (var cell in previous.Elements(S + "c").Where(c => (string?)c.Attribute("s") != null && ColumnIndex(Regex.Replace((string)c.Attribute("r")!, "[0-9]", "")) <= 17))
                 EnsureCell(row, Regex.Replace((string)cell.Attribute("r")!, "[0-9]", "")).SetAttributeValue("s", (string)cell.Attribute("s")!);
         }
         // The legacy register keeps N1–N6 as numbers; text digits would show Excel's "number stored as text".
@@ -238,8 +244,8 @@ public sealed class WorkbookCatalog
         SetLinks(row, localDocuments, electronic);
         SetPending(code, draft.Pending);
         var dimension = sheet.Root!.Element(S + "dimension");
-        var last = Regex.Match((string?)dimension?.Attribute("ref") ?? "R1", @"([A-Z]+)([0-9]+)$");
-        var column = last.Success && ColumnIndex(last.Groups[1].Value) > 18 ? last.Groups[1].Value : "R";
+        var last = Regex.Match((string?)dimension?.Attribute("ref") ?? "Q1", @"([A-Z]+)([0-9]+)$");
+        var column = last.Success && ColumnIndex(last.Groups[1].Value) > 17 ? last.Groups[1].Value : "Q";
         var lastRow = last.Success ? int.Parse(last.Groups[2].Value) : 1;
         dimension?.SetAttributeValue("ref", "A1:" + column + Math.Max(rowNumber, lastRow));
         Reload(); return Records.Single(r => r.Code == code);
@@ -260,9 +266,6 @@ public sealed class WorkbookCatalog
     public void SetPending(string code, bool pending)
     {
         var row = sheet.Descendants(S + "row").Single(r => string.Concat(Enumerable.Range(0, 6).Select(i => Value(Cell(r, ((char)('A' + i)).ToString())))) == code);
-        var header = Row(1);
-        if (Value(Cell(header, "R")) is not ("" or "Stav zpracování")) throw new InvalidOperationException("Sloupec R je již používán pro jiná data.");
-        Set(header, "R", "Stav zpracování"); Set(row, "R", pending ? "Rozpracovaný" : "Dokončený");
         var fills = styles.Root!.Element(S + "fills")!;
         var xfs = styles.Root!.Element(S + "cellXfs")!;
         int orange = fills.Elements().ToList().FindIndex(f => (string?)f.Element(S + "patternFill")?.Element(S + "fgColor")?.Attribute("rgb") == "FFFFC000");
@@ -313,7 +316,7 @@ public sealed class WorkbookCatalog
     }
     public static byte[] Create()
     {
-        var headers = new[] { "N1", "N2", "N3", "N4", "N5", "N6", "Název", "Reference", "Autor/Autoři/účastníci", "Platnost", "Elektronická forma (ano/ne)", "File/folder name", "Link na Google disk", "Link na sychronizovaný lokální disk G:", "Klíčová slova (neobsažená v názvu) a poznámky", "N1N2N3N4N5N6", "Google ID složky/souboru", "Stav zpracování" };
+        var headers = new[] { "N1", "N2", "N3", "N4", "N5", "N6", "Název", "Reference", "Autor/Autoři/účastníci", "Platnost", "Elektronická forma (ano/ne)", "File/folder name", "Link na Google disk", "Link na sychronizovaný lokální disk G:", "Klíčová slova (neobsažená v názvu) a poznámky", "N1N2N3N4N5N6", "Google ID složky/souboru" };
         var data = new Dictionary<string, string>
         {
             ["[Content_Types].xml"] = "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>",
@@ -323,7 +326,7 @@ public sealed class WorkbookCatalog
             ["xl/styles.xml"] = $"<styleSheet xmlns=\"{S}\"><fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts><fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs><cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs></styleSheet>",
             ["xl/worksheets/sheet2.xml"] = $"<worksheet xmlns=\"{S}\"><sheetData/></worksheet>"
         };
-        data["xl/worksheets/sheet1.xml"] = new XDocument(new XElement(S + "worksheet", new XElement(S + "dimension", new XAttribute("ref", "A1:R1")), new XElement(S + "sheetData", new XElement(S + "row", new XAttribute("r", 1), headers.Select((h, i) => new XElement(S + "c", new XAttribute("r", ((char)('A' + i)) + "1"), new XAttribute("t", "inlineStr"), new XElement(S + "is", new XElement(S + "t", h)))))))).ToString();
+        data["xl/worksheets/sheet1.xml"] = new XDocument(new XElement(S + "worksheet", new XElement(S + "dimension", new XAttribute("ref", "A1:Q1")), new XElement(S + "sheetData", new XElement(S + "row", new XAttribute("r", 1), headers.Select((h, i) => new XElement(S + "c", new XAttribute("r", ((char)('A' + i)) + "1"), new XAttribute("t", "inlineStr"), new XElement(S + "is", new XElement(S + "t", h)))))))).ToString();
         using var output = new MemoryStream(); using (var zip = new ZipArchive(output, ZipArchiveMode.Create, true)) foreach (var p in data) { using var w = new StreamWriter(zip.CreateEntry(p.Key).Open()); w.Write(p.Value); }
         return output.ToArray();
     }

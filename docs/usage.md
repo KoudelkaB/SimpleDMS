@@ -22,18 +22,22 @@ k výběru. Nový archiv založíte zadáním jména.
 Na kartě Přidat dokument zvolte kategorii (názvy pocházejí z listu
 „Kódování dokumentů“), vyplňte název a případně autora (nabízí dříve
 použitá jména), referenci, platnost (výběr data), poznámky a přílohy.
-Aplikace ukazuje číslo, které bude přiděleno. Soubory i celé složky lze vybrat
-nebo přetáhnout. Uložení zkopíruje přílohy do složky `číslo_Název` ve složce
+Aplikace ukazuje číslo, které bude přiděleno. Přílohy jsou soubory (vybrané
+nebo přetažené), složky ani podsložky se nepřidávají. Stejně jako v původní
+evidenci je dokument buď jeden soubor `číslo.přípona` (např. `100242.pdf`),
+nebo při více souborech složka `číslo`. Uložení zkopíruje přílohy do složky
 dokumentů, zapíše řádek do registru (M a N jako odkazy stejně jako v původní
 evidenci) a připraví štítek. Bez příloh vznikne papírový záznam. Doplnění
-příloh v detailu zachová původní číslo; samostatný starší soubor se přitom
-přesune do nové složky dokumentu.
+příloh v detailu zachová původní číslo: papírový záznam dostane soubor,
+dokument tvořený jedním souborem se změní na složku `číslo`, do které se
+původní soubor přesune spolu s novými.
 
 Používejte jednoho zapisujícího správce. Čtenáři si mohou zapnout režim
 pouze pro čtení v Nastavení. Čísla jsou stabilní a nikdy nevyplňují mezery;
-složka `číslo_…`, která v registru ještě není, své číslo také blokuje.
-Před každou změnou registru vzniká místní záloha (posledních 50). Je-li
-registr otevřený v Excelu, zápis se odmítne; zavřete Excel a zkuste to znovu.
+soubor nebo složka začínající číslem, které v registru ještě není, své číslo
+také blokuje. Před každou změnou registru vzniká místní záloha (posledních
+50). Je-li registr otevřený v Excelu, zápis se odmítne; zavřete Excel a
+zkuste to znovu.
 
 ## Volitelné Google ID
 
@@ -45,11 +49,12 @@ nese v QR evidenční číslo. Bez propojení archiv funguje stejně, jen se Q n
 
 ## Rozpracovanost
 
-Rozpracované legacy záznamy mají oranžový celý řádek A–Q (#FFC000).
-Světle oranžová jednotlivá buňka se za rozpracovanost nepovažuje.
-Aplikace zapisuje explicitní stav do R a aktualizuje oranžové zvýraznění.
-Původní styly si uchovává v části XLSX pro návrat po dokončení.
-Změna stavu nemění evidenční číslo.
+Rozpracované záznamy mají oranžový celý řádek A–Q (#FFC000); jiný
+příznak se nepoužívá. Světle oranžová jednotlivá buňka se za rozpracovanost
+nepovažuje. Původní styly si aplikace uchovává ve skryté části XLSX pro
+návrat po dokončení. Změna stavu nemění evidenční číslo. Sloupec R
+„Stav zpracování“, který zapisovaly dřívější verze SimpleDMS, se při otevření
+archivu z registru odstraní.
 
 ## Offline
 
@@ -66,10 +71,13 @@ kalibrační posuny v milimetrech a uložte profil. Kliknutím na pozici vyberte
 začátek; zaškrtněte již použité nebo chybějící nálepky. Evidované archy lze
 vybírat opakovaně i po restartu.
 
-Náhled PDF ani odeslání do tiskárny nálepky nespotřebuje. Po tisku
-zvolte **Potvrdit výsledek tisku** a označte skutečně vytištěné pozice.
-Při chybě lze potvrdit jen část a zbytek zůstane ve frontě. Větší dávka
-pokračuje na dalších arších; v dialogu je číslo stránky i pozice.
+Náhled PDF ani odeslání do tiskárny nálepky samo nespotřebuje. Hned po
+tisku se zobrazí dotaz se všemi štítky předvybranými: povedený tisk potvrdíte
+jedním tlačítkem (nebo Enter). Nepovedené štítky odškrtněte a zvolte
+**Uložit jen zaškrtnuté**; zůstanou ve frontě a jejich pozice volné.
+**Nic se nevytisklo** tiskovou úlohu zruší. **Rozhodnu později** ji ponechá
+a výsledek potvrdíte tlačítkem **Potvrdit výsledek tisku** (také po tisku
+z náhledu PDF). Větší dávka pokračuje na dalších arších.
 
 Na Windows aplikace tiskne přímo na vybranou tiskárnu v měřítku 100 %
 a zkontroluje, že formát papíru tiskárny odpovídá profilu archu. Linux

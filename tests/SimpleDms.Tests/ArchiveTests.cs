@@ -43,16 +43,25 @@ public sealed class ArchiveTests
         Assert.Equal(bytes, System.IO.File.ReadAllBytes(p.WorkbookPath));
     }
     [Fact]
-    public async Task AddCopiesFilesAndFoldersIntoNumberedDocumentFolder()
+    public async Task SingleFileIsStoredAsCodeNamedFile()
     {
-        var (service, p, dir) = Archive();
-        var source = Path.Combine(dir, "scans"); File(source, "annex/page.pdf", "nested"); var single = File(dir, "cover.pdf", "cover");
-        var record = await service.AddAsync(p, new("10", "Smlouva: nájem", Validity: "1.2.2030"), [source, single]);
-        Assert.Equal("100001", record.Code); Assert.Equal("/100001_Smlouva_ nájem", record.RelativePath); Assert.True(record.Electronic); Assert.Equal("1.2.2030", record.Validity);
-        var folder = service.LocalPath(p, record)!;
-        Assert.Equal("nested", System.IO.File.ReadAllText(Path.Combine(folder, "scans", "annex", "page.pdf")));
-        Assert.Equal("cover", System.IO.File.ReadAllText(Path.Combine(folder, "cover.pdf")));
-        Assert.True(System.IO.File.Exists(source + "/annex/page.pdf"));
+        var (service, p, dir) = Archive(); var scan = File(dir, "Sken smlouvy.PDF", "scan");
+        var record = await service.AddAsync(p, new("10", "Smlouva: nájem", Validity: "1.2.2030"), [scan]);
+        Assert.Equal("100001", record.Code); Assert.Equal("/100001.PDF", record.RelativePath); Assert.True(record.Electronic); Assert.Equal("1.2.2030", record.Validity);
+        Assert.Equal("scan", System.IO.File.ReadAllText(Path.Combine(p.DocumentsPath, "100001.PDF")));
+        Assert.Equal(Path.Combine(p.DocumentsPath, "100001.PDF"), service.LocalPath(p, record));
+        Assert.True(System.IO.File.Exists(scan));
+    }
+    [Fact]
+    public async Task SeveralFilesGoToCodeNamedFolderAndFoldersAreRejected()
+    {
+        var (service, p, dir) = Archive(); var a = File(dir, "a.pdf", "a"); var b = File(dir, "b.pdf", "b");
+        var record = await service.AddAsync(p, new("10", "Dvě přílohy"), [a, b]);
+        Assert.Equal("/100001", record.RelativePath);
+        Assert.Equal(["a.pdf", "b.pdf"], Directory.EnumerateFiles(Path.Combine(p.DocumentsPath, "100001")).Select(Path.GetFileName).Order());
+        Assert.Empty(Directory.EnumerateDirectories(Path.Combine(p.DocumentsPath, "100001")));
+        Directory.CreateDirectory(Path.Combine(dir, "scans"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.AddAsync(p, new("10", "Složka"), [Path.Combine(dir, "scans")]));
         Assert.Single(service.Load(p).Catalog.Records);
     }
     [Fact]
@@ -62,26 +71,40 @@ public sealed class ArchiveTests
         Assert.Equal("100008", (await service.AddAsync(p, new("10", "Papír"), [])).Code);
     }
     [Fact]
-    public async Task PaperRecordReceivesAttachmentsWithoutNewNumber()
+    public async Task PaperRecordGetsFileThenFolderWithoutNewNumber()
     {
         var (service, p, dir) = Archive();
         var paper = await service.AddAsync(p, new("10", "Papír"), []); Assert.False(paper.Electronic); Assert.Equal("", paper.RelativePath);
         var withFile = await service.AddAsync(p, new("10", "Papír"), [File(dir, "scan.pdf", "scan")], paper.Code);
-        Assert.Equal(paper.Code, withFile.Code); Assert.True(withFile.Electronic); Assert.Equal("/100001_Papír", withFile.RelativePath);
+        Assert.Equal(paper.Code, withFile.Code); Assert.True(withFile.Electronic); Assert.Equal("/100001.pdf", withFile.RelativePath);
         var again = await service.AddAsync(p, new("10", "Papír"), [File(dir, "other/scan.pdf", "second")], paper.Code);
-        Assert.Equal(withFile.RelativePath, again.RelativePath);
-        Assert.Equal(["scan (2).pdf", "scan.pdf"], Directory.EnumerateFiles(service.LocalPath(p, again)!).Select(Path.GetFileName).Order());
+        Assert.Equal("/100001", again.RelativePath);
+        Assert.Equal(["100001.pdf", "scan.pdf"], Directory.EnumerateFiles(service.LocalPath(p, again)!).Select(Path.GetFileName).Order());
+        var third = await service.AddAsync(p, new("10", "Papír"), [File(dir, "third/scan.pdf", "third")], paper.Code);
+        Assert.Equal("/100001", third.RelativePath);
+        Assert.Equal(["100001.pdf", "scan (2).pdf", "scan.pdf"], Directory.EnumerateFiles(service.LocalPath(p, third)!).Select(Path.GetFileName).Order());
         Assert.Single(service.Load(p).Catalog.Records);
     }
     [Fact]
-    public async Task LegacyFileAttachmentMovesIntoNewDocumentFolder()
+    public async Task LegacyFileWithSuffixMovesIntoCodeFolder()
+    {
+        var (service, p, dir) = Archive();
+        var bytes = System.IO.File.ReadAllBytes(p.WorkbookPath); var c = new WorkbookCatalog(bytes); c.Append("100003", new("10", "Starý"), "/100003A05.doc"); System.IO.File.WriteAllBytes(p.WorkbookPath, c.Save());
+        File(p.DocumentsPath, "100003A05.doc", "legacy");
+        var record = await service.AddAsync(p, new("10", "Starý"), [File(dir, "scan.pdf", "scan")], "100003");
+        Assert.Equal("/100003", record.RelativePath);
+        Assert.Equal(["100003A05.doc", "scan.pdf"], Directory.EnumerateFiles(service.LocalPath(p, record)!).Select(Path.GetFileName).Order());
+    }
+    [Fact]
+    public async Task FailedWriteReturnsMovedLegacyFile()
     {
         var (service, p, dir) = Archive();
         var bytes = System.IO.File.ReadAllBytes(p.WorkbookPath); var c = new WorkbookCatalog(bytes); c.Append("100001", new("10", "Starý"), "/100001.pdf"); System.IO.File.WriteAllBytes(p.WorkbookPath, c.Save());
-        File(p.DocumentsPath, "100001.pdf", "legacy");
-        var record = await service.AddAsync(p, new("10", "Starý"), [File(dir, "scan.pdf", "scan")], "100001");
-        Assert.Equal("/100001_Starý", record.RelativePath);
-        Assert.Equal(["100001.pdf", "scan.pdf"], Directory.EnumerateFiles(service.LocalPath(p, record)!).Select(Path.GetFileName).Order());
+        File(p.DocumentsPath, "100001.pdf", "legacy"); var locked = File(dir, "locked.pdf", "x");
+        using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            await Assert.ThrowsAnyAsync<IOException>(() => service.AddAsync(p, new("10", "Starý"), [File(dir, "scan.pdf", "scan"), locked], "100001"));
+        Assert.Equal(["100001.pdf"], Directory.EnumerateFileSystemEntries(p.DocumentsPath).Select(Path.GetFileName));
+        Assert.Equal("/100001.pdf", Assert.Single(service.Load(p).Catalog.Records).RelativePath);
     }
     [Fact]
     public async Task OpenRegisterBlocksWriteWithoutLeavingFolder()
