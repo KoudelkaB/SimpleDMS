@@ -68,9 +68,6 @@ public sealed class MainWindow : Window
     public MainWindow(LocalStore local)
     {
         store = local; settings = store.Read<AppSettings>("settings.json") ?? new(); service = new(store);
-        // Archives of the former Drive API version had no local root; they are selected again as a folder.
-        var migrated = settings.Archive != null && string.IsNullOrEmpty(settings.Archive.Root);
-        if (migrated) settings.Archive = null;
         var shipped = Path.Combine(AppContext.BaseDirectory, "oauth-client.json");
         if (settings.ClientId.Length == 0 && File.Exists(shipped)) ImportOAuth(File.ReadAllText(shipped));
         InitializeServices();
@@ -177,7 +174,7 @@ public sealed class MainWindow : Window
             rootPath.Text = settings.Archive.Root; driveUrl.Text = settings.Archive.DriveRootId is { Length: > 0 } id ? "https://drive.google.com/drive/folders/" + id : "";
             status.Text = "Načítám registr…";
         }
-        else status.Text = migrated ? "SimpleDMS nyní pracuje s místní synchronizovanou složkou. Na kartě Archiv vyberte složku archivu." : "Na kartě Archiv vyberte složku archivu.";
+        else status.Text = "Na kartě Archiv vyberte složku archivu.";
         UpdateArchive();
         // Everything touching the synchronized drive runs off the UI thread: a streaming Drive
         // or a disconnected network disk can take a long time to answer.
@@ -242,11 +239,7 @@ public sealed class MainWindow : Window
     }
     void SetArchive(ArchiveProfile p)
     {
-        // Without a previous archive (first start or migration) the current queue carries over.
-        var carry = settings.Archive == null && !settings.ArchiveLabelQueues.ContainsKey(p.Key);
-        Save(); settings.Archive = p;
-        if (!carry) { settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; settings.PendingPrint = settings.ArchivePrintPlans.GetValueOrDefault(p.Key); }
-        Save(); UpdateLabels();
+        Save(); settings.Archive = p; settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; settings.PendingPrint = settings.ArchivePrintPlans.GetValueOrDefault(p.Key); Save(); UpdateLabels();
     }
     // Runs a file-system probe in the background; a drive that does not answer counts as unavailable.
     static async Task<T?> Probe<T>(Func<T> work, int seconds = 5)
@@ -274,11 +267,6 @@ public sealed class MainWindow : Window
         }
         catch (Exception e) { catalog = null; status.Text = e.Message; }
         UpdateArchive();
-        if (catalog?.RemovedStateColumn == true && CanWrite)
-        {
-            try { await service.RewriteAsync(p); await LoadCatalogAsync(); status.Text = "Z registru byl odstraněn sloupec R „Stav zpracování“. Rozpracované dokumenty označuje jen oranžový řádek."; }
-            catch (InvalidOperationException e) { status.Text = "Sloupec R se odstraní při příštím zápisu. " + e.Message; }
-        }
     }
     async Task TickAsync()
     {

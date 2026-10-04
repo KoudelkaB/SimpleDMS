@@ -119,25 +119,6 @@ public sealed class CoreTests
         Assert.Equal("https://drive.google.com/open?id=abc123", Assert.Single(new WorkbookCatalog(linked.Save()).Records).DriveUrl);
     }
     [Fact]
-    public void OldStateColumnIsRemovedAndOnlyOrangeRowMeansPending()
-    {
-        XNamespace s = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-        var c = new WorkbookCatalog(WorkbookCatalog.Create()); c.Append("100001", new("10", "Hotový"), ""); c.Append("100002", new("10", "Rozpracovaný", Pending: true), "");
-        XElement Cell(string r, string v) => new(s + "c", new XAttribute("r", r), new XAttribute("t", "inlineStr"), new XElement(s + "is", new XElement(s + "t", v)));
-        var bytes = Modify(c.Save(), "xl/worksheets/sheet1.xml", xml =>
-        {
-            var rows = xml.Descendants(s + "row").ToList();
-            rows[0].Add(Cell("R1", "Stav zpracování")); rows[1].Add(Cell("R2", "Rozpracovaný")); rows[2].Add(Cell("R3", "Dokončený"));
-        });
-        var legacy = new WorkbookCatalog(bytes);
-        Assert.True(legacy.RemovedStateColumn);
-        Assert.False(legacy.Records[0].Pending); Assert.True(legacy.Records[1].Pending);
-        legacy.SetPending("100001", true);
-        var saved = legacy.Save(); var xml = System.Text.Encoding.UTF8.GetString(Entry(saved, "xl/worksheets/sheet1.xml"));
-        Assert.DoesNotContain("r=\"R", xml); Assert.DoesNotContain("Stav zpracování", xml);
-        var reloaded = new WorkbookCatalog(saved); Assert.False(reloaded.RemovedStateColumn); Assert.All(reloaded.Records, r => Assert.True(r.Pending));
-    }
-    [Fact]
     public void SavingDropsCalcChainSoExcelDoesNotRepair()
     {
         using var m = new MemoryStream(); m.Write(WorkbookCatalog.Create());

@@ -18,7 +18,6 @@ public sealed class WorkbookCatalog
     readonly string sheetPath;
     readonly Dictionary<string, int[]> originalStyles;
     public List<string> Warnings { get; } = [];
-    public bool RemovedStateColumn { get; }
     public IReadOnlyList<DocumentRecord> Records { get; private set; } = [];
     public IReadOnlyDictionary<string, string> Categories { get; private set; } = new Dictionary<string, string>();
     public WorkbookCatalog(byte[] bytes)
@@ -48,14 +47,6 @@ public sealed class WorkbookCatalog
             if (Value(Cell(first, ((char)('A' + i)).ToString())) != "N" + (i + 1))
                 throw new InvalidOperationException("List Databáze nemá očekávané hlavičky N1–N6 v A–F.");
         if (Value(Cell(first, "G")) != "Název") throw new InvalidOperationException("V G chybí hlavička Název.");
-        // Earlier SimpleDMS versions added a "Stav zpracování" column R. The register marks work in
-        // progress only by the orange row, so the column is dropped; foreign values in R are kept.
-        if (Value(Cell(first, "R")) == "Stav zpracování")
-        {
-            foreach (var cell in sheet.Descendants(S + "c").Where(c => Regex.Replace((string?)c.Attribute("r") ?? "", "[0-9]", "") == "R" && Value(c) is "" or "Stav zpracování" or "Rozpracovaný" or "Dokončený").ToList())
-                cell.Remove();
-            RemovedStateColumn = true;
-        }
         var cats = wb.Descendants(S + "sheet").FirstOrDefault(x => (string?)x.Attribute("name") == "Kódování dokumentů");
         var categories = new Dictionary<string, string>();
         if (cats != null)

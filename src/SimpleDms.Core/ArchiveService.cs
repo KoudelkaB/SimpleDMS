@@ -200,8 +200,6 @@ public sealed class ArchiveService(LocalStore store)
     }
     public Task SetPendingAsync(ArchiveProfile p, string code, bool pending, CancellationToken ct = default)
         => Task.Run(() => EditAsync(p, c => { c.SetPending(code, pending); return Task.FromResult(0); }, ct), ct);
-    // Saves the register unchanged, which persists load-time clean-ups such as removing the old column R.
-    public Task RewriteAsync(ArchiveProfile p, CancellationToken ct = default) => Task.Run(() => EditAsync(p, _ => Task.FromResult(0), ct), ct);
     public string? LocalPath(ArchiveProfile p, DocumentRecord record)
     {
         try

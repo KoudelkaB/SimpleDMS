@@ -52,9 +52,7 @@ nese v QR evidenční číslo. Bez propojení archiv funguje stejně, jen se Q n
 Rozpracované záznamy mají oranžový celý řádek A–Q (#FFC000); jiný
 příznak se nepoužívá. Světle oranžová jednotlivá buňka se za rozpracovanost
 nepovažuje. Původní styly si aplikace uchovává ve skryté části XLSX pro
-návrat po dokončení. Změna stavu nemění evidenční číslo. Sloupec R
-„Stav zpracování“, který zapisovaly dřívější verze SimpleDMS, se při otevření
-archivu z registru odstraní.
+návrat po dokončení. Změna stavu nemění evidenční číslo.
 
 ## Offline
 
