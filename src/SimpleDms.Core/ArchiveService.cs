@@ -100,15 +100,16 @@ public sealed class ArchiveService(LocalStore store)
         try { return ArchivePaths.NextCode(catalog.Records, category, Directory.Exists(p.DocumentsPath) ? ReservedCodes(p) : []); }
         catch (Exception e) when (e is InvalidOperationException or IOException or UnauthorizedAccessException) { return ""; }
     }
-    // As in the legacy register, a document is either a single file "<code>.<ext>" or a folder "<code>"
-    // holding several files. Subfolders are not created; attachments are always plain files.
-    public async Task<DocumentRecord> AddAsync(ArchiveProfile p, DocumentDraft draft, IEnumerable<string> files, string? existingCode = null, IProgress<string>? progress = null, CancellationToken ct = default)
+    // As in the legacy register, a document is a single item named by its code: one file becomes
+    // "<code>.<ext>", one folder becomes the folder "<code>", several items go into a folder "<code>".
+    // A folder is treated like a file: it is copied whole, including its subfolders.
+    public async Task<DocumentRecord> AddAsync(ArchiveProfile p, DocumentDraft draft, IEnumerable<string> items, string? existingCode = null, IProgress<string>? progress = null, CancellationToken ct = default)
     {
         if (existingCode == null && string.IsNullOrWhiteSpace(draft.Title)) throw new InvalidOperationException("Vyplňte název dokumentu.");
-        var sources = Files(files);
+        var sources = Items(items);
         if (existingCode != null && sources.Count == 0) throw new InvalidOperationException("Vyberte přílohy k doplnění.");
         if (!Directory.Exists(p.DocumentsPath)) throw new InvalidOperationException("Složka dokumentů není dostupná: " + p.DocumentsPath);
-        string? created = null; (string From, string To)? moved = null;
+        var created = new List<string>(); (string From, string To)? moved = null;
         try
         {
             return await Task.Run(() => EditAsync(p, async catalog =>
@@ -119,21 +120,28 @@ public sealed class ArchiveService(LocalStore store)
                 var relative = "";
                 if (sources.Count > 0)
                 {
+                    var copier = new Copier(sources, progress, ct);
                     var existing = old == null ? null : LocalPath(p, old);
                     if (existing == null && sources.Count == 1)
                     {
-                        var file = Free(Path.Combine(p.DocumentsPath, code + Path.GetExtension(sources[0])));
-                        created = file; progress?.Report("Kopírování: " + Path.GetFileName(sources[0]));
-                        await CopyFileAsync(sources[0], file, ct);
-                        relative = "/" + Path.GetFileName(file);
+                        var source = sources[0]; var folder = Directory.Exists(source);
+                        var target = Free(Path.Combine(p.DocumentsPath, folder ? code : code + Path.GetExtension(source)));
+                        created.Add(target); await copier.CopyAsync(source, target);
+                        relative = "/" + Path.GetFileName(target);
                     }
                     else
                     {
                         var folder = existing != null && Directory.Exists(existing) ? existing : Free(Path.Combine(p.DocumentsPath, code));
-                        if (!Directory.Exists(folder)) { Directory.CreateDirectory(folder); created = folder; }
-                        // A document that was a single file becomes a folder holding it and the new files.
+                        if (!Directory.Exists(folder)) { Directory.CreateDirectory(folder); created.Add(folder); }
+                        // A document that was a single file becomes a folder holding it and the new items.
                         if (existing != null && File.Exists(existing)) { var to = Path.Combine(folder, Path.GetFileName(existing)); File.Move(existing, to); moved = (existing, to); }
-                        await CopyAsync(sources, folder, progress, ct);
+                        foreach (var source in sources)
+                        {
+                            var name = ArchivePaths.SafeName(Path.GetFileName(source)); var target = Path.Combine(folder, name);
+                            if (File.Exists(target) && File.Exists(source) && await SameAsync(source, target, ct)) continue;
+                            for (var i = 2; File.Exists(target) || Directory.Exists(target); i++) target = Path.Combine(folder, Path.GetFileNameWithoutExtension(name) + $" ({i})" + Path.GetExtension(name));
+                            created.Add(target); await copier.CopyAsync(source, target);
+                        }
                         relative = "/" + Path.GetRelativePath(p.DocumentsPath, folder).Replace('\\', '/');
                     }
                 }
@@ -144,11 +152,11 @@ public sealed class ArchiveService(LocalStore store)
         }
         catch
         {
-            // Undo only our own changes: return a moved legacy file, then remove what this call created.
+            // Undo only our own changes: first return a moved legacy file (it may sit in a created folder), then remove what this call created.
             try
             {
                 if (moved is { } m) File.Move(m.To, m.From);
-                if (Directory.Exists(created)) Directory.Delete(created, true); else if (File.Exists(created)) File.Delete(created);
+                foreach (var path in Enumerable.Reverse(created)) if (Directory.Exists(path)) Directory.Delete(path, true); else if (File.Exists(path)) File.Delete(path);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             throw;
@@ -156,16 +164,26 @@ public sealed class ArchiveService(LocalStore store)
     }
     static string Free(string path) => File.Exists(path) || Directory.Exists(path)
         ? throw new InvalidOperationException($"Ve složce dokumentů už existuje {Path.GetFileName(path)}, který registr neuvádí. Zkontrolujte jej.") : path;
-    static async Task CopyAsync(IReadOnlyList<string> files, string folder, IProgress<string>? progress, CancellationToken ct)
+    static readonly EnumerationOptions Tree = new() { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
+    // Copies files and whole folders, reporting progress over all files of the operation.
+    sealed class Copier(IReadOnlyList<string> sources, IProgress<string>? progress, CancellationToken ct)
     {
-        var count = 0;
-        foreach (var source in files)
+        readonly int total = sources.Sum(x => Directory.Exists(x) ? Directory.EnumerateFiles(x, "*", Tree).Count() : 1);
+        int done;
+        public async Task CopyAsync(string source, string target)
+        {
+            if (!Directory.Exists(source)) { await File(source, target); return; }
+            Directory.CreateDirectory(target);
+            foreach (var directory in Directory.EnumerateDirectories(source, "*", Tree))
+                Directory.CreateDirectory(Path.Combine(target, Relative(source, directory)));
+            foreach (var file in Directory.EnumerateFiles(source, "*", Tree))
+                await File(file, Path.Combine(target, Relative(source, file)));
+        }
+        static string Relative(string root, string path) => Path.Combine(Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar).Select(ArchivePaths.SafeName).ToArray());
+        async Task File(string source, string target)
         {
             ct.ThrowIfCancellationRequested();
-            progress?.Report($"Kopírování {++count}/{files.Count}: {Path.GetFileName(source)}");
-            var name = ArchivePaths.SafeName(Path.GetFileName(source)); var target = Path.Combine(folder, name);
-            if (File.Exists(target) && await SameAsync(source, target, ct)) continue;
-            for (var i = 2; File.Exists(target) || Directory.Exists(target); i++) target = Path.Combine(folder, Path.GetFileNameWithoutExtension(name) + $" ({i})" + Path.GetExtension(name));
+            progress?.Report($"Kopírování {++done}/{total}: {Path.GetFileName(source)}");
             await CopyFileAsync(source, target, ct);
         }
     }
@@ -185,14 +203,14 @@ public sealed class ArchiveService(LocalStore store)
         async Task<byte[]> Hash(string path) { await using var s = File.OpenRead(path); return await SHA256.HashDataAsync(s, ct); }
         var first = await Hash(a); var second = await Hash(b); return first.AsSpan().SequenceEqual(second);
     }
-    static List<string> Files(IEnumerable<string> inputs)
+    static List<string> Items(IEnumerable<string> inputs)
     {
-        var result = inputs.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        foreach (var file in result)
+        var result = inputs.Select(x => Path.GetFullPath(x).TrimEnd(Path.DirectorySeparatorChar)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        foreach (var item in result)
         {
-            if (Directory.Exists(file)) throw new InvalidOperationException($"Složku {Path.GetFileName(file)} nelze přidat. Vyberte soubory; více souborů se uloží do složky dokumentu.");
-            if (!File.Exists(file)) throw new InvalidOperationException("Příloha již není na disku: " + file);
-            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("Zástupce nebo symbolický odkaz nelze přidat. Vyberte vlastní soubor.");
+            if (!File.Exists(item) && !Directory.Exists(item)) throw new InvalidOperationException("Příloha již není na disku: " + item);
+            if ((File.GetAttributes(item) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("Zástupce nebo symbolický odkaz nelze přidat. Vyberte vlastní soubor nebo složku.");
+            if (Directory.Exists(item) && !Directory.EnumerateFiles(item, "*", Tree).Any()) throw new InvalidOperationException($"Složka {Path.GetFileName(item)} neobsahuje žádné soubory.");
         }
         if (result.GroupBy(x => ArchivePaths.SafeName(Path.GetFileName(x)), StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
             throw new InvalidOperationException("Přílohy mají shodný název. Přejmenujte je.");

@@ -64,6 +64,9 @@ public sealed class UiTests
             Assert.Contains(combos, c => c.SelectedItem?.ToString() == "10 – smlouvy" && c.ItemsSource!.Cast<object>().Select(x => x.ToString()).SequenceEqual(["10 – smlouvy", "11 – časopisy"]));
             Assert.Contains(window.GetLogicalDescendants().OfType<TextBlock>(), t => t.Text == "Přidělí se číslo 100002");
             Assert.True(window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content as string == "Uložit dokument a připravit štítek").IsEnabled);
+            // Unticking QR applies immediately, without saving the label profile.
+            window.GetLogicalDescendants().OfType<CheckBox>().Single(x => x.Content as string == "QR kód").IsChecked = false;
+            var saved = store.Read<AppSettings>("settings.json")!; Assert.False(saved.Labels.Qr); Assert.False(saved.LabelProfiles[saved.Labels.Name].Qr);
             var qa = Environment.GetEnvironmentVariable("SIMPLEDMS_QA_DIR");
             if (qa != null)
             {

@@ -22,15 +22,17 @@ k výběru. Nový archiv založíte zadáním jména.
 Na kartě Přidat dokument zvolte kategorii (názvy pocházejí z listu
 „Kódování dokumentů“), vyplňte název a případně autora (nabízí dříve
 použitá jména), referenci, platnost (výběr data), poznámky a přílohy.
-Aplikace ukazuje číslo, které bude přiděleno. Přílohy jsou soubory (vybrané
-nebo přetažené), složky ani podsložky se nepřidávají. Stejně jako v původní
-evidenci je dokument buď jeden soubor `číslo.přípona` (např. `100242.pdf`),
-nebo při více souborech složka `číslo`. Uložení zkopíruje přílohy do složky
-dokumentů, zapíše řádek do registru (M a N jako odkazy stejně jako v původní
-evidenci) a připraví štítek. Bez příloh vznikne papírový záznam. Doplnění
-příloh v detailu zachová původní číslo: papírový záznam dostane soubor,
-dokument tvořený jedním souborem se změní na složku `číslo`, do které se
-původní soubor přesune spolu s novými.
+Aplikace ukazuje číslo, které bude přiděleno. Přílohy mohou být soubory
+i složky (včetně podsložek): vyberte je tlačítky Vybrat soubory / Vybrat
+složky, nebo je přetáhněte z Průzkumníku, kde lze označit soubory i složky
+najednou. Stejně jako v původní evidenci se jedna příloha uloží pod číslem
+dokumentu (soubor `100242.pdf` nebo složka `100242`), více příloh do složky
+`číslo`. Uložení zkopíruje přílohy do složky dokumentů, zapíše řádek do
+registru (M a N jako odkazy stejně jako v původní evidenci) a připraví
+štítek. Bez příloh vznikne papírový záznam. Doplnění souborů nebo složek
+v detailu zachová původní číslo: papírový záznam dostane přílohu, dokument
+tvořený jedním souborem se změní na složku `číslo`, do které se původní
+soubor přesune spolu s novými.
 
 Používejte jednoho zapisujícího správce. Čtenáři si mohou zapnout režim
 pouze pro čtení v Nastavení. Čísla jsou stabilní a nikdy nevyplňují mezery;

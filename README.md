@@ -10,7 +10,7 @@ souborové operace a fungují i offline; nahrání do cloudu obstará synchroniz
 
 - Hledání bez diakritiky, filtry podle kategorií s názvy z listu „Kódování dokumentů“.
 - Stabilní šestimístné číslo: dvě číslice kategorie a čtyři pořadí v kategorii.
-- Dokument jako soubor `číslo.přípona` nebo složka `číslo` jako v původní evidenci; doplnění skenů k původnímu číslu.
+- Dokument jako soubor `číslo.přípona` nebo složka `číslo` jako v původní evidenci; přílohy mohou být soubory i složky, doplnění k původnímu číslu.
 - Volitelné propojení s Google účtem (jen čtení názvů a ID) doplní Q (Drive ID),
   takže odkaz v M a QR kód na štítku vedou na Google Drive.
 - Rozpracovanost jako oranžový celý řádek, stejně jako v původním XLSX.

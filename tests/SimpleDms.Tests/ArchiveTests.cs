@@ -53,16 +53,41 @@ public sealed class ArchiveTests
         Assert.True(System.IO.File.Exists(scan));
     }
     [Fact]
-    public async Task SeveralFilesGoToCodeNamedFolderAndFoldersAreRejected()
+    public async Task SeveralItemsGoToCodeNamedFolder()
     {
         var (service, p, dir) = Archive(); var a = File(dir, "a.pdf", "a"); var b = File(dir, "b.pdf", "b");
         var record = await service.AddAsync(p, new("10", "Dvě přílohy"), [a, b]);
         Assert.Equal("/100001", record.RelativePath);
         Assert.Equal(["a.pdf", "b.pdf"], Directory.EnumerateFiles(Path.Combine(p.DocumentsPath, "100001")).Select(Path.GetFileName).Order());
         Assert.Empty(Directory.EnumerateDirectories(Path.Combine(p.DocumentsPath, "100001")));
-        Directory.CreateDirectory(Path.Combine(dir, "scans"));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.AddAsync(p, new("10", "Složka"), [Path.Combine(dir, "scans")]));
-        Assert.Single(service.Load(p).Catalog.Records);
+    }
+    [Fact]
+    public async Task SingleFolderBecomesCodeFolderWithItsSubfolders()
+    {
+        var (service, p, dir) = Archive(); var scans = Path.Combine(dir, "Skeny"); File(scans, "strana1.pdf", "1"); File(scans, "příloha/foto.jpg", "foto");
+        var record = await service.AddAsync(p, new("10", "Složka"), [scans]);
+        Assert.Equal("/100001", record.RelativePath);
+        Assert.Equal("1", System.IO.File.ReadAllText(Path.Combine(p.DocumentsPath, "100001", "strana1.pdf")));
+        Assert.Equal("foto", System.IO.File.ReadAllText(Path.Combine(p.DocumentsPath, "100001", "příloha", "foto.jpg")));
+        Directory.CreateDirectory(Path.Combine(dir, "prázdná"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.AddAsync(p, new("10", "Prázdná"), [Path.Combine(dir, "prázdná")]));
+    }
+    [Fact]
+    public async Task FilesAndFoldersCanBeMixedAndAttachedLater()
+    {
+        var (service, p, dir) = Archive();
+        var scans = Path.Combine(dir, "Skeny"); File(scans, "a/1.pdf", "1"); var cover = File(dir, "obal.pdf", "obal");
+        var record = await service.AddAsync(p, new("10", "Smíšené"), [cover, scans]);
+        Assert.Equal("/100001", record.RelativePath);
+        var folder = Path.Combine(p.DocumentsPath, "100001");
+        Assert.True(System.IO.File.Exists(Path.Combine(folder, "obal.pdf"))); Assert.True(System.IO.File.Exists(Path.Combine(folder, "Skeny", "a", "1.pdf")));
+        var single = await service.AddAsync(p, new("10", "Jeden soubor"), [File(dir, "x.pdf", "x")]); Assert.Equal("/100002.pdf", single.RelativePath);
+        var extra = Path.Combine(dir, "Doplněk"); File(extra, "d.pdf", "d");
+        var attached = await service.AddAsync(p, new("10", "Jeden soubor"), [extra], single.Code);
+        Assert.Equal("/100002", attached.RelativePath);
+        Assert.True(System.IO.File.Exists(Path.Combine(p.DocumentsPath, "100002", "100002.pdf"))); Assert.True(System.IO.File.Exists(Path.Combine(p.DocumentsPath, "100002", "Doplněk", "d.pdf")));
+        await service.AddAsync(p, new("10", "Jeden soubor"), [extra], single.Code);
+        Assert.True(Directory.Exists(Path.Combine(p.DocumentsPath, "100002", "Doplněk (2)")));
     }
     [Fact]
     public async Task NumberingSkipsFoldersNotYetInRegister()

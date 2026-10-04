@@ -103,14 +103,14 @@ public sealed class MainWindow : Window
         Grid.SetRow(counter, 1); Grid.SetColumnSpan(counter, 2); searchPanel.Children.Add(counter);
         Grid.SetRow(records, 2); searchPanel.Children.Add(records);
         var detailPanel = Stack(Heading("Detail dokumentu"), details, Action("Otevřít přílohy", OpenSelectedAsync), Action("Otevřít na Google Drive", OpenDriveAsync),
-            Action("Přepnout Rozpracovaný / Dokončený", TogglePendingAsync), Action("Doplnit přílohy ke stejnému číslu", AttachAsync), Action("Přidat štítek do fronty", QueueSelectedAsync));
+            Action("Přepnout Rozpracovaný / Dokončený", TogglePendingAsync), Text("Doplnit přílohy ke stejnému číslu:"), Row(Action("Soubory…", () => AttachAsync(false)), Action("Složky…", () => AttachAsync(true))), Action("Přidat štítek do fronty", QueueSelectedAsync));
         detailPanel.Margin = new(18, 0, 0, 0); searchPanel.Children.Add(new ScrollViewer { Content = detailPanel, [Grid.RowProperty] = 2, [Grid.ColumnProperty] = 1 });
         AddTab("Dokumenty", searchPanel, false);
 
         saveDocument = Action("Uložit dokument a připravit štítek", SaveDocumentAsync);
         saveDocument.Classes.Add("accent");
-        var attachments = Stack(Row(Action("Vybrat soubory", PickAttachmentsAsync), Action("Vyprázdnit", () => { attachmentPaths.Clear(); UpdateFiles(); return Task.CompletedTask; })),
-            filesList, Text("Soubory lze také přetáhnout do seznamu. Jeden soubor se uloží jako číslo dokumentu s příponou (např. 100242.pdf), více souborů do složky pojmenované číslem. Papírový dokument může být bez příloh."));
+        var attachments = Stack(Row(Action("Vybrat soubory", () => PickAttachmentsAsync(false)), Action("Vybrat složky", () => PickAttachmentsAsync(true)), Action("Vyprázdnit", () => { attachmentPaths.Clear(); UpdateFiles(); return Task.CompletedTask; })),
+            filesList, Text("Soubory i složky (i najednou) lze také přetáhnout z Průzkumníku do seznamu. Jedna příloha se uloží pod číslem dokumentu (např. 100242.pdf nebo složka 100242), více příloh do složky pojmenované číslem. Papírový dokument může být bez příloh."));
         AddTab("Přidat dokument", Stack(Heading("Nový dokument"),
             Form(("Kategorie", Row(newCategory, nextCode)), ("Název", newTitle), ("Autor / účastníci", newAuthor), ("Reference", newReference),
                 ("Platnost", Row(newValidity, Action("Bez data", () => { newValidity.SelectedDate = null; return Task.CompletedTask; }))), ("Poznámky", newNotes), ("", newPending), ("Přílohy", attachments)),
@@ -121,8 +121,7 @@ public sealed class MainWindow : Window
         DragDrop.AddDropHandler(filesList, (_, e) =>
         {
             foreach (var path in (e.DataTransfer.TryGetFiles() ?? []).Select(x => x.TryGetLocalPath()).OfType<string>())
-                if (Directory.Exists(path)) status.Text = $"Složku {Path.GetFileName(path)} nelze přidat. Přetáhněte soubory; více souborů se uloží do složky dokumentu.";
-                else if (!attachmentPaths.Contains(path)) attachmentPaths.Add(path);
+                if (!attachmentPaths.Contains(path)) attachmentPaths.Add(path);
             UpdateFiles(); e.Handled = true;
         });
 
@@ -147,6 +146,8 @@ public sealed class MainWindow : Window
 
         clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; readOnly.IsChecked = settings.ReadOnly;
         readOnly.IsCheckedChanged += (_, _) => { settings.ReadOnly = readOnly.IsChecked == true; Save(); UpdateArchive(); };
+        // QR is not part of the sheet geometry, so it applies at once (also to a prepared print job) without saving the profile.
+        includeQr.IsCheckedChanged += (_, _) => { var qr = includeQr.IsChecked == true; if (settings.Labels.Qr == qr) return; settings.Labels.Qr = qr; if (settings.LabelProfiles.TryGetValue(settings.Labels.Name, out var stored)) stored.Qr = qr; Save(); };
         AddTab("Nastavení", Stack(Heading("Režim"), readOnly,
             Heading("Google OAuth klient (jen pro volitelné Google ID)"), Text("Běžný uživatel používá OAuth klienta dodaného vydavatelem. Toto nastavení slouží pro vlastní sestavení nebo první konfiguraci správce."), clientId, clientSecret,
             Row(Action("Importovat Google client JSON", ImportOAuthAsync), Action("Uložit nastavení Google", SaveOAuthAsync), Action("Návod pro správce", () => { GoogleAuth.OpenBrowser("https://github.com/KoudelkaB/SimpleDMS/blob/main/docs/google-setup.md"); return Task.CompletedTask; })),
@@ -406,8 +407,15 @@ public sealed class MainWindow : Window
         var p = Profile(); settings.Archive = p with { DriveRootId = null, AccountId = "", AccountEmail = "" }; driveOnline = false; Save(); UpdateArchive();
         status.Text = "Propojení s Google Drive zrušeno. Archiv dál funguje přes synchronizovanou složku."; return Task.CompletedTask;
     }
-    async Task PickAttachmentsAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Přílohy dokumentu", AllowMultiple = true }); foreach (var file in files) { var path = file.TryGetLocalPath(); if (path != null && !attachmentPaths.Contains(path)) attachmentPaths.Add(path); } UpdateFiles(); }
-    void UpdateFiles() => filesList.ItemsSource = attachmentPaths.Select(Path.GetFileName).ToList();
+    // The system dialog picks either files or folders, so there is one button for each; Explorer drag and drop takes both at once.
+    async Task<List<string>> PickAsync(string title, bool folders)
+    {
+        var picked = folders ? (await StorageProvider.OpenFolderPickerAsync(new() { Title = title, AllowMultiple = true })).Cast<IStorageItem>()
+            : await StorageProvider.OpenFilePickerAsync(new() { Title = title, AllowMultiple = true });
+        return picked.Select(x => x.TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní soubor nebo složku.")).ToList();
+    }
+    async Task PickAttachmentsAsync(bool folders) { foreach (var path in await PickAsync("Přílohy dokumentu", folders)) if (!attachmentPaths.Contains(path)) attachmentPaths.Add(path); UpdateFiles(); }
+    void UpdateFiles() => filesList.ItemsSource = attachmentPaths.Select(x => Path.GetFileName(x) + (Directory.Exists(x) ? "  (složka)" : "")).ToList();
     Progress<string> Progress() => new(text => status.Text = text);
     async Task SaveDocumentAsync()
     {
@@ -422,11 +430,11 @@ public sealed class MainWindow : Window
         status.Text = $"Dokument {record.Code} uložen. Štítek je ve frontě." + (record.Electronic ? " Přílohy na Google Drive nahraje synchronizační klient." : "");
     }
     async Task TogglePendingAsync() { RequireWrite(); var record = Selected(); await service.SetPendingAsync(Profile(), record.Code, !record.Pending, Token); await LoadCatalogAsync(); }
-    async Task AttachAsync()
+    async Task AttachAsync(bool folders)
     {
         RequireWrite(); var r = Selected();
-        var picked = await StorageProvider.OpenFilePickerAsync(new() { Title = "Doplnit přílohy k " + r.Code, AllowMultiple = true }); if (picked.Count == 0) return;
-        await service.AddAsync(Profile(), new(r.Category, r.Title), picked.Select(x => x.TryGetLocalPath() ?? throw new InvalidOperationException("Příloha není místní.")), r.Code, Progress(), Token);
+        var picked = await PickAsync("Doplnit přílohy k " + r.Code, folders); if (picked.Count == 0) return;
+        await service.AddAsync(Profile(), new(r.Category, r.Title), picked, r.Code, Progress(), Token);
         await LoadCatalogAsync(); status.Text = $"Přílohy doplněny k dokumentu {r.Code}.";
     }
     async Task OpenSelectedAsync()
