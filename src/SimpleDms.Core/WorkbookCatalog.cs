@@ -68,7 +68,9 @@ public sealed class WorkbookCatalog
         Categories = categories;
     }
     static XDocument Load(byte[] bytes) => XDocument.Load(new MemoryStream(bytes), LoadOptions.PreserveWhitespace);
-    static XElement? Cell(XElement? row, string col) => row?.Elements(S + "c").FirstOrDefault(c => Regex.Replace((string?)c.Attribute("r") ?? "", "[0-9]", "") == col);
+    // Column letters of a cell reference such as "M12"; called for every cell, so no regular expression.
+    static string Column(XElement cell) { var r = (string?)cell.Attribute("r") ?? ""; var n = 0; while (n < r.Length && char.IsAsciiLetter(r[n])) n++; return r[..n]; }
+    static XElement? Cell(XElement? row, string col) => row?.Elements(S + "c").FirstOrDefault(c => Column(c) == col);
     string Value(XElement? cell)
     {
         if (cell == null) return "";
@@ -76,18 +78,22 @@ public sealed class WorkbookCatalog
         var value = cell.Element(S + "v")?.Value ?? "";
         return (string?)cell.Attribute("t") == "s" && int.TryParse(value, out var i) ? strings[i] : value;
     }
-    string LinkValue(XElement? cell)
+    // Cell reference → hyperlink target, built once per reload instead of searching the sheet for every cell.
+    Dictionary<string, string> Hyperlinks()
+    {
+        var relPath = Path.GetDirectoryName(sheetPath)!.Replace('\\', '/') + "/_rels/" + Path.GetFileName(sheetPath) + ".rels";
+        var targets = parts.TryGetValue(relPath, out var bytes)
+            ? Load(bytes).Root!.Elements().Where(x => x.Attribute("Id") != null && x.Attribute("Target") != null).GroupBy(x => (string)x.Attribute("Id")!).ToDictionary(g => g.Key, g => (string)g.First().Attribute("Target")!) : [];
+        var links = new Dictionary<string, string>();
+        foreach (var link in sheet.Root!.Elements(S + "hyperlinks").Elements(S + "hyperlink"))
+            if ((string?)link.Attribute("ref") is { } reference && (string?)link.Attribute(R + "id") is { } id && targets.TryGetValue(id, out var target)) links.TryAdd(reference, target);
+        return links;
+    }
+    string LinkValue(XElement? cell, Dictionary<string, string> links)
     {
         var f = cell?.Element(S + "f")?.Value ?? "";
-        var match = Regex.Match(f, "HYPERLINK\\(\"([^\"]+)\"", RegexOptions.IgnoreCase);
-        if (match.Success) return match.Groups[1].Value;
-        var reference = (string?)cell?.Attribute("r");
-        var link = sheet.Descendants(S + "hyperlink").FirstOrDefault(x => (string?)x.Attribute("ref") == reference);
-        var id = (string?)link?.Attribute(R + "id");
-        var relPath = Path.GetDirectoryName(sheetPath)!.Replace('\\', '/') + "/_rels/" + Path.GetFileName(sheetPath) + ".rels";
-        if (id != null && parts.TryGetValue(relPath, out var bytes))
-            return (string?)Load(bytes).Root!.Elements().FirstOrDefault(x => (string?)x.Attribute("Id") == id)?.Attribute("Target") ?? Value(cell);
-        return Value(cell);
+        if (f.Length > 0 && Regex.Match(f, "HYPERLINK\\(\"([^\"]+)\"", RegexOptions.IgnoreCase) is { Success: true } match) return match.Groups[1].Value;
+        return (string?)cell?.Attribute("r") is { } reference && links.TryGetValue(reference, out var target) ? target : Value(cell);
     }
     public static string DriveLink(string id) => "https://drive.google.com/open?id=" + Uri.EscapeDataString(id);
     // Platnost is stored as an Excel date serial in the legacy register.
@@ -110,25 +116,29 @@ public sealed class WorkbookCatalog
     {
         Warnings.Clear();
         var list = new List<DocumentRecord>();
+        var links = Hyperlinks();
+        // Rows share a few dozen styles; resolve each style's fill only once.
+        var fills = new Dictionary<int, string?>();
+        string? FillOf(XElement? cell) { var style = Style(cell); if (!fills.TryGetValue(style, out var fill)) fills[style] = fill = Fill(cell); return fill; }
         foreach (var row in sheet.Descendants(S + "row").Where(r => (int?)r.Attribute("r") > 1))
         {
             var digits = Enumerable.Range(0, 6).Select(i => Value(Cell(row, ((char)('A' + i)).ToString()))).ToArray();
-            if (!digits.All(d => Regex.IsMatch(d, "^[0-9]$")))
+            if (!digits.All(d => d.Length == 1 && char.IsAsciiDigit(d[0])))
             {
                 if (digits.Any(d => d.Length > 0)) Warnings.Add($"Řádek {row.Attribute("r")}: neúplné evidenční číslo.");
                 continue;
             }
             var code = string.Concat(digits);
             // Work in progress is marked only by the whole row A–Q filled orange.
-            var pending = "ABCDEFGHIJKLMNOPQ".All(c => Fill(Cell(row, c.ToString())) == "FFFFC000");
+            var pending = "ABCDEFGHIJKLMNOPQ".All(c => FillOf(Cell(row, c.ToString())) == "FFFFC000");
             var p = Value(Cell(row, "P"));
             if (p.Length > 0 && p != code) Warnings.Add($"{code}: souhrnné číslo v P se liší od A–F.");
             // M is usually a (shared) HYPERLINK formula built from Q, so Q is the reliable source of the link.
-            var id = Value(Cell(row, "Q")).Trim(); var link = LinkValue(Cell(row, "M"));
+            var id = Value(Cell(row, "Q")).Trim(); var link = LinkValue(Cell(row, "M"), links);
             var url = id.Length > 0 ? DriveLink(id) : Regex.IsMatch(link, "^https://drive\\.google\\.com/.*(?:/d/|/folders/|[?&]id=)[A-Za-z0-9_-]{10,}") ? link : "";
             list.Add(new((int)row.Attribute("r")!, code, Value(Cell(row, "G")), Value(Cell(row, "H")), Value(Cell(row, "I")),
                 DateValue(Cell(row, "J")), Value(Cell(row, "K")).Equals("ano", StringComparison.OrdinalIgnoreCase),
-                Value(Cell(row, "L")), url, LinkValue(Cell(row, "N")), Value(Cell(row, "O")), id, pending));
+                Value(Cell(row, "L")), url, LinkValue(Cell(row, "N"), links), Value(Cell(row, "O")), id, pending));
         }
         if (list.GroupBy(x => x.Code).Any(g => g.Count() > 1)) throw new InvalidOperationException("Registr obsahuje duplicitní evidenční čísla. Zápis nelze bezpečně provést.");
         Records = list;
@@ -148,7 +158,7 @@ public sealed class WorkbookCatalog
         var cell = Cell(row, col);
         if (cell != null) return cell;
         cell = new XElement(S + "c", new XAttribute("r", col + (string)row.Attribute("r")!));
-        var after = row.Elements(S + "c").FirstOrDefault(c => ColumnIndex(Regex.Replace((string)c.Attribute("r")!, "[0-9]", "")) > ColumnIndex(col));
+        var after = row.Elements(S + "c").FirstOrDefault(c => ColumnIndex(Column(c)) > ColumnIndex(col));
         if (after == null) row.Add(cell); else after.AddBeforeSelf(cell);
         return cell;
     }
@@ -219,8 +229,8 @@ public sealed class WorkbookCatalog
         if (Records.Count > 0)
         {
             var previous = Row(Records.MaxBy(r => r.Row)!.Row);
-            foreach (var cell in previous.Elements(S + "c").Where(c => (string?)c.Attribute("s") != null && ColumnIndex(Regex.Replace((string)c.Attribute("r")!, "[0-9]", "")) <= 17))
-                EnsureCell(row, Regex.Replace((string)cell.Attribute("r")!, "[0-9]", "")).SetAttributeValue("s", (string)cell.Attribute("s")!);
+            foreach (var cell in previous.Elements(S + "c").Where(c => (string?)c.Attribute("s") != null && ColumnIndex(Column(c)) <= 17))
+                EnsureCell(row, Column(cell)).SetAttributeValue("s", (string)cell.Attribute("s")!);
         }
         // The legacy register keeps N1–N6 as numbers; text digits would show Excel's "number stored as text".
         for (var i = 0; i < 6; i++)
