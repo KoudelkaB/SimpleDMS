@@ -118,6 +118,7 @@ public sealed class CoreTests
         var linked = new WorkbookCatalog(saved); linked.SetDriveId("100001", "abc123");
         Assert.Equal("https://drive.google.com/open?id=abc123", Assert.Single(new WorkbookCatalog(linked.Save()).Records).DriveUrl);
     }
+[Fact]    public void RowPointingAtAnotherDocumentIsReported()    {        var c = new WorkbookCatalog(WorkbookCatalog.Create());        c.Append("100027", new("10", "Původní"), "/100027A10.doc"); c.Append("100034", new("10", "Zkopírovaný"), "/100027A10.doc"); c.Append("100035", new("10", "Správný"), "/100035");        var records = new WorkbookCatalog(c.Save()).Records;        Assert.Equal("", records[0].Problem); Assert.Equal("", records[2].Problem);        Assert.Contains("dokumentu 100027", records[1].Problem);    }
     [Fact]
     public void SavingDropsCalcChainSoExcelDoesNotRepair()
     {

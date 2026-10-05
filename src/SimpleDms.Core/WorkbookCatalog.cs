@@ -131,14 +131,19 @@ public sealed class WorkbookCatalog
             var code = string.Concat(digits);
             // Work in progress is marked only by the whole row A–Q filled orange.
             var pending = "ABCDEFGHIJKLMNOPQ".All(c => FillOf(Cell(row, c.ToString())) == "FFFFC000");
-            var p = Value(Cell(row, "P"));
-            if (p.Length > 0 && p != code) Warnings.Add($"{code}: souhrnné číslo v P se liší od A–F.");
+            // L names the document file or folder ("/100027A10.doc", "/190123"); P is MID(L, 2, 6) in the legacy
+            // register. A different number there means the row points at another document's attachment.
+            var l = Value(Cell(row, "L")).Trim(); var p = Value(Cell(row, "P")).Trim(); var problem = "";
+            if (Regex.Match(l, "^/?([0-9]{6})(?![0-9])") is { Success: true } target && target.Groups[1].Value != code)
+                problem = $"Sloupec L ({l}) ukazuje na soubor nebo složku dokumentu {target.Groups[1].Value}. Opravte L v registru.";
+            else if (p.Length > 0 && p != code) problem = $"Souhrnné číslo v P ({p}) neodpovídá číslu dokumentu. Opravte P nebo L v registru.";
+            if (problem.Length > 0) Warnings.Add($"{code}: {problem}");
             // M is usually a (shared) HYPERLINK formula built from Q, so Q is the reliable source of the link.
             var id = Value(Cell(row, "Q")).Trim(); var link = LinkValue(Cell(row, "M"), links);
             var url = id.Length > 0 ? DriveLink(id) : Regex.IsMatch(link, "^https://drive\\.google\\.com/.*(?:/d/|/folders/|[?&]id=)[A-Za-z0-9_-]{10,}") ? link : "";
             list.Add(new((int)row.Attribute("r")!, code, Value(Cell(row, "G")), Value(Cell(row, "H")), Value(Cell(row, "I")),
                 DateValue(Cell(row, "J")), Value(Cell(row, "K")).Equals("ano", StringComparison.OrdinalIgnoreCase),
-                Value(Cell(row, "L")), url, LinkValue(Cell(row, "N"), links), Value(Cell(row, "O")), id, pending));
+                Value(Cell(row, "L")), url, LinkValue(Cell(row, "N"), links), Value(Cell(row, "O")), id, pending, problem));
         }
         if (list.GroupBy(x => x.Code).Any(g => g.Count() > 1)) throw new InvalidOperationException("Registr obsahuje duplicitní evidenční čísla. Zápis nelze bezpečně provést.");
         Records = list;

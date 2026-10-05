@@ -27,7 +27,11 @@ public sealed class MainWindow : Window
     readonly TextBlock mode = new() { Text = "Vyberte složku archivu", FontSize = 13, TextWrapping = TextWrapping.Wrap };
     readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap };
     readonly TextBlock details = new() { Text = "Vyberte záznam.", TextWrapping = TextWrapping.Wrap };
-    readonly TextBlock counter = new();
+    readonly TextBlock counter = new() { VerticalAlignment = VerticalAlignment.Center };
+    // Shows only the records whose register row points at another document; toggles back to all.
+    readonly Button problemsButton = new() { IsVisible = false };
+    readonly TextBlock detailProblem = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Firebrick, FontWeight = FontWeight.SemiBold, IsVisible = false };
+    bool onlyProblems;
     readonly TextBlock syncClient = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeight.SemiBold };
     readonly TextBox rootPath = new() { PlaceholderText = "Místní složka, ve které leží registr XLSX a složka dokumentů" };
     readonly TextBox archiveName = new() { PlaceholderText = "Název nového archivu", Width = 300 };
@@ -103,9 +107,10 @@ public sealed class MainWindow : Window
 
         var searchPanel = new Grid { RowDefinitions = new("Auto,Auto,*"), ColumnDefinitions = new("2*,*") };
         var filters = Stack(query, Row(category, state, electronic)); Grid.SetColumnSpan(filters, 2); searchPanel.Children.Add(filters);
-        Grid.SetRow(counter, 1); Grid.SetColumnSpan(counter, 2); searchPanel.Children.Add(counter);
+        var counterRow = Row(counter, problemsButton); counterRow.Margin = new(0, 4); Grid.SetRow(counterRow, 1); Grid.SetColumnSpan(counterRow, 2); searchPanel.Children.Add(counterRow);
+        problemsButton.Click += (_, _) => { onlyProblems = !onlyProblems; Filter(); };
         Grid.SetRow(records, 2); searchPanel.Children.Add(records);
-        var detailPanel = Stack(Heading("Detail dokumentu"), details, Action("Otevřít přílohy", OpenSelectedAsync), Action("Otevřít na Google Drive", OpenDriveAsync),
+        var detailPanel = Stack(Heading("Detail dokumentu"), detailProblem, details, Action("Otevřít přílohy", OpenSelectedAsync), Action("Otevřít na Google Drive", OpenDriveAsync),
             Action("Přepnout Rozpracovaný / Dokončený", TogglePendingAsync), Text("Doplnit přílohy ke stejnému číslu:"), Row(Action("Soubory…", () => AttachAsync(false)), Action("Složky…", () => AttachAsync(true))), Action("Přidat štítek do fronty", QueueSelectedAsync));
         detailPanel.Margin = new(18, 0, 0, 0); searchPanel.Children.Add(new ScrollViewer { Content = detailPanel, [Grid.RowProperty] = 2, [Grid.ColumnProperty] = 1 });
         AddTab("Dokumenty", searchPanel, false);
@@ -167,7 +172,9 @@ public sealed class MainWindow : Window
             if (r == null) return new TextBlock();
             var row = new Grid { ColumnDefinitions = new("80,*,220,110"), Margin = new Thickness(8, 5) };
             row.Children.Add(new TextBlock { Text = r.Code, FontWeight = FontWeight.SemiBold });
-            row.Children.Add(new TextBlock { Text = r.Title, TextTrimming = TextTrimming.CharacterEllipsis, [Grid.ColumnProperty] = 1 });
+            var title = new TextBlock { Text = (r.Problem.Length > 0 ? "⚠ " : "") + r.Title, TextTrimming = TextTrimming.CharacterEllipsis, [Grid.ColumnProperty] = 1 };
+            if (r.Problem.Length > 0) { title.Foreground = Brushes.Firebrick; ToolTip.SetTip(title, r.Problem); }
+            row.Children.Add(title);
             row.Children.Add(new TextBlock { Text = CategoryName(r.Category), Opacity = 0.7, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new(8, 0), [Grid.ColumnProperty] = 2 });
             var stateText = new TextBlock { Text = r.State, [Grid.ColumnProperty] = 3 }; if (r.Pending) stateText.Foreground = Brushes.DarkOrange; row.Children.Add(stateText);
             return row;
@@ -208,6 +215,8 @@ public sealed class MainWindow : Window
     int SheetNumber(LabelSheet sheet) { var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == settings.Labels.Key).ToList(); var index = sheets.FindIndex(x => x.Id == sheet.Id); return (index < 0 ? sheets.Count : index) + 1; }
     sealed record CategoryOption(string Code, string Name) { public override string ToString() => Name.Length > 0 ? $"{Code} – {Name}" : Code; }
     CancellationToken Token => operation?.Token ?? CancellationToken.None;
+    // Czech count with the right noun form: 1 štítek, 2–4 štítky, 5 a více štítků.
+    static string Count(int n, string one, string few, string many) => $"{n} {(n == 1 ? one : n is >= 2 and <= 4 ? few : many)}";
     static TextBlock Text(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap };
     static TextBlock Heading(string text) => new() { Text = text, FontSize = 18, FontWeight = FontWeight.SemiBold, Margin = new(0, 12, 0, 4) };
     static StackPanel Stack(params Control[] controls) { var p = new StackPanel { Spacing = 8 }; foreach (var c in controls) p.Children.Add(c); return p; }
@@ -336,10 +345,16 @@ public sealed class MainWindow : Window
     void Filter()
     {
         var chosen = (category.SelectedItem as CategoryOption)?.Code;
-        var list = catalog?.Records.Where(r => r.Matches(query.Text ?? "") && (chosen == null || r.Category == chosen) && (state.SelectedIndex <= 0 || r.Pending == (state.SelectedIndex == 1)) && (electronic.SelectedIndex <= 0 || r.Electronic == (electronic.SelectedIndex == 1))).ToList() ?? [];
+        var list = catalog?.Records.Where(r => r.Matches(query.Text ?? "") && (chosen == null || r.Category == chosen) && (state.SelectedIndex <= 0 || r.Pending == (state.SelectedIndex == 1)) && (electronic.SelectedIndex <= 0 || r.Electronic == (electronic.SelectedIndex == 1)) && (!onlyProblems || r.Problem.Length > 0)).ToList() ?? [];
         var selectedCode = (records.SelectedItem as DocumentRecord)?.Code;
-        records.ItemsSource = list; records.SelectedItem = list.FirstOrDefault(x => x.Code == selectedCode); counter.Text = $"{list.Count} z {catalog?.Records.Count ?? 0} dokumentů" + (catalog?.Warnings.Count > 0 ? $" · {catalog.Warnings.Count} upozornění v registru" : "");
-        ToolTip.SetTip(counter, catalog == null ? "" : string.Join('\n', catalog.Warnings));
+        records.ItemsSource = list; records.SelectedItem = list.FirstOrDefault(x => x.Code == selectedCode); counter.Text = $"{list.Count} z {catalog?.Records.Count ?? 0} dokumentů";
+        var problems = catalog?.Records.Count(r => r.Problem.Length > 0) ?? 0;
+        if (problems == 0) onlyProblems = false;
+        problemsButton.IsVisible = problems > 0;
+        problemsButton.Content = onlyProblems ? "Zobrazit všechny dokumenty" : $"⚠ {Count(problems, "záznam", "záznamy", "záznamů")} s chybou v registru – zobrazit";
+        // Rows without a complete number are not records; they can only be listed.
+        var rows = catalog?.Warnings.Where(w => w.Contains("neúplné evidenční číslo")).ToList() ?? [];
+        if (onlyProblems && rows.Count > 0) status.Text = string.Join(" ", rows);
     }
     DocumentRecord Selected() => records.SelectedItem as DocumentRecord ?? throw new InvalidOperationException("Vyberte dokument v seznamu.");
     ArchiveProfile Profile() => settings.Archive ?? throw new InvalidOperationException("Nejprve otevřete archiv.");
@@ -351,7 +366,9 @@ public sealed class MainWindow : Window
     }
     void UpdateDetail()
     {
+        detailProblem.IsVisible = records.SelectedItem is DocumentRecord { Problem.Length: > 0 };
         if (records.SelectedItem is not DocumentRecord r) { details.Text = "Vyberte záznam."; return; }
+        detailProblem.Text = "⚠ Chyba v registru: " + r.Problem;
         details.Text = $"{r.Code}\n{r.Title}\n\nKategorie: {CategoryName(r.Category)}\n{r.State}\nAutor: {r.Author}\nReference: {r.Reference}\nPlatnost: {r.Validity}\nElektronická forma: {(r.Electronic ? "ano" : "ne")}"
             + (r.RelativePath.Length > 0 ? $"\nUmístění: {r.RelativePath}" : "") + $"\nGoogle ID: {(r.DriveId.Length > 0 ? r.DriveId : "zatím nedoplněno")}\n\n{r.Notes}";
     }
@@ -476,7 +493,7 @@ public sealed class MainWindow : Window
     async Task OpenSelectedAsync()
     {
         var r = Selected(); var p = Profile(); var local = await Task.Run(() => service.LocalPath(p, r), Token);
-        if (local != null) { GoogleAuth.OpenBrowser(local); return; }
+        if (local != null) { GoogleAuth.OpenBrowser(local); if (r.Problem.Length > 0) status.Text = "Pozor, příloha byla otevřena podle sloupce L, který ukazuje na jiný dokument. " + r.Problem; return; }
         throw new InvalidOperationException(!r.Electronic ? "Dokument existuje pouze v papírovém archivu." : cached ? "Složka archivu není dostupná." : $"Přílohy nebyly ve složce {Profile().DocumentsPath} nalezeny. Zkontrolujte synchronizaci, případně je otevřete na Google Drive.");
     }
     Task OpenDriveAsync()
@@ -492,9 +509,9 @@ public sealed class MainWindow : Window
     {
         var keys = queueList.SelectedItems?.OfType<LabelItem>().Select(x => x.Key).ToHashSet() ?? [];
         if (keys.Count == 0) throw new InvalidOperationException("Vyberte ve frontě štítky k odebrání (více štítků s klávesou Ctrl).");
-        settings.LabelQueue.RemoveAll(x => keys.Contains(x.Key)); Save(); UpdateLabels(); status.Text = $"Odebráno {keys.Count} štítků z fronty."; return Task.CompletedTask;
+        settings.LabelQueue.RemoveAll(x => keys.Contains(x.Key)); Save(); UpdateLabels(); status.Text = $"Z fronty odebráno: {Count(keys.Count, "štítek", "štítky", "štítků")}."; return Task.CompletedTask;
     }
-    Task ClearQueueAsync() { var count = settings.LabelQueue.Count; settings.LabelQueue.Clear(); Save(); UpdateLabels(); status.Text = $"Fronta vyprázdněna ({count} štítků)."; return Task.CompletedTask; }
+    Task ClearQueueAsync() { var count = settings.LabelQueue.Count; settings.LabelQueue.Clear(); Save(); UpdateLabels(); status.Text = $"Fronta vyprázdněna ({Count(count, "štítek", "štítky", "štítků")})."; return Task.CompletedTask; }
     async Task LoadPrintersAsync()
     {
         var printers = await Task.Run(LabelPrinter.List); var fallback = await Task.Run(LabelPrinter.Default);
@@ -539,7 +556,7 @@ public sealed class MainWindow : Window
         Save(); UpdateLabels();
         var plan = LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue);
         var withoutLink = settings.Labels.Qr ? plan.Placements.Count(x => x.Label.Url.Length == 0) : 0;
-        var note = withoutLink > 0 ? $" {withoutLink} štítků zatím nemá Google ID, jejich QR obsahuje evidenční číslo." : "";
+        var note = withoutLink > 0 ? $" Bez Google ID ({Count(withoutLink, "štítek", "štítky", "štítků")}) nese QR evidenční číslo." : "";
         if (print)
         {
             status.Text = "Tisk…";
@@ -582,7 +599,7 @@ public sealed class MainWindow : Window
         foreach (var page in plan.Pages.Select((p, i) => (Page: p, Index: i)))
         { var sheet = settings.LabelSheets.GetValueOrDefault(page.Page.SheetId) ?? new() { Id = page.Page.SheetId, ProfileKey = plan.ProfileKey }; foreach (var p in confirmed.Where(x => x.Page == page.Index)) sheet.Used.Add(p.Position); settings.LabelSheets[sheet.Id] = sheet; }
         settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; Save(); UpdateLabels();
-        status.Text = $"Potvrzeno {confirmed.Count} z {plan.Placements.Count} štítků." + (result.Queue.Count > 0 ? $" Ve frontě zůstává {result.Queue.Count}." : "");
+        status.Text = $"Potvrzeno {confirmed.Count} z {Count(plan.Placements.Count, "štítku", "štítků", "štítků")}." + (result.Queue.Count > 0 ? $" Ve frontě zůstává {result.Queue.Count}." : "");
     }
     void ImportOAuth(string json) { var root = JsonDocument.Parse(json).RootElement; var item = root.TryGetProperty("installed", out var installed) ? installed : root; settings.ClientId = item.GetProperty("client_id").GetString() ?? ""; settings.ClientSecret = item.TryGetProperty("client_secret", out var s) ? s.GetString() ?? "" : ""; }
     async Task ImportOAuthAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Google OAuth desktop client JSON", AllowMultiple = false }); if (files.Count == 0) return; var path = files[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní JSON."); ImportOAuth(await File.ReadAllTextAsync(path, Token)); clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; Save(); InitializeServices(); driveOnline = false; UpdateArchive(); status.Text = "OAuth klient nastaven. Propojení s Google Drive obnovíte na kartě Archiv."; }

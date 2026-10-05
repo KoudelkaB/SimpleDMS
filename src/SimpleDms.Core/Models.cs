@@ -7,7 +7,7 @@ namespace SimpleDms.Core;
 
 public sealed record DocumentRecord(int Row, string Code, string Title, string Reference, string Author,
     string Validity, bool Electronic, string RelativePath, string DriveUrl, string LocalUrl, string Notes,
-    string DriveId, bool Pending)
+    string DriveId, bool Pending, string Problem = "")
 {
     public string Category => Code[..2];
     public string State => Pending ? "Rozpracovaný" : "Dokončený";

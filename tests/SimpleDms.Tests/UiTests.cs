@@ -77,6 +77,30 @@ public sealed class UiTests
         }, CancellationToken.None);
     }
     [Fact]
+    public async Task RecordsWithRegisterErrorsCanBeListedAndExplained()
+    {
+        using var session = HeadlessUnitTestSession.StartNew(typeof(TestApp));
+        await session.Dispatch(() =>
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "simpledms-ui-" + Guid.NewGuid().ToString("N")); var store = new LocalStore(Path.Combine(dir, "app"));
+            var profile = new ArchiveProfile(Path.Combine(dir, "drive"), "Archiv", "Archiv"); Directory.CreateDirectory(profile.DocumentsPath);
+            var book = new WorkbookCatalog(WorkbookCatalog.Create());
+            book.Append("100027", new("10", "Původní"), "/100027A10.doc"); book.Append("100034", new("10", "Dohoda o provedení práce"), "/100027A10.doc"); book.Append("100035", new("10", "Správný"), "");
+            File.WriteAllBytes(profile.WorkbookPath, book.Save()); store.Write("settings.json", new AppSettings { Archive = profile });
+            var window = new MainWindow(store); window.Show();
+            var button = window.GetLogicalDescendants().OfType<Button>().First(b => (b.Content as string ?? "").StartsWith("⚠"));
+            WaitFor(() => button.IsVisible && (string)button.Content! == "⚠ 1 záznam s chybou v registru – zobrazit");
+            button.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+            var list = window.GetLogicalDescendants().OfType<ListBox>().First(x => x.ItemsSource is IEnumerable<DocumentRecord>);
+            var shown = Assert.Single(list.ItemsSource!.Cast<DocumentRecord>()); Assert.Equal("100034", shown.Code);
+            list.SelectedItem = shown; Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Contains(window.GetLogicalDescendants().OfType<TextBlock>(), t => t.IsVisible && (t.Text ?? "").StartsWith("⚠ Chyba v registru: Sloupec L (/100027A10.doc)"));
+            var qa = Environment.GetEnvironmentVariable("SIMPLEDMS_QA_DIR"); if (qa != null) { using var bitmap = window.CaptureRenderedFrame(); bitmap?.Save(Path.Combine(qa, "problems.png")); }
+            Assert.Equal("Zobrazit všechny dokumenty", button.Content);
+            window.Close();
+        }, CancellationToken.None);
+    }
+    [Fact]
     public async Task QueueLabelsCanBeRemovedAndCleared()
     {
         using var session = HeadlessUnitTestSession.StartNew(typeof(TestApp));
