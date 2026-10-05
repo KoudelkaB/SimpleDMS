@@ -1,5 +1,14 @@
 # Používání
 
+## Instalace veřejné bety
+
+Stáhněte balíček z [oficiálních Releases](https://github.com/KoudelkaB/SimpleDMS/releases).
+Verze [0.1.0-beta.1](https://github.com/KoudelkaB/SimpleDMS/releases/tag/v0.1.0-beta.1)
+nabízí Windows EXE nebo přenosný ZIP a Linux Flatpak nebo přenosný tar.gz.
+.NET runtime i konfigurace pro volitelné Google přihlášení jsou přibalené.
+Vlastní Google Cloud projekt běžný uživatel nepotřebuje. Betu nejprve
+vyzkoušejte na kopii archivu a tisk na obyčejném papíru.
+
 ## Jednorázové nastavení synchronizované složky
 
 1. Nainstalujte [Google Drive for desktop](https://www.google.com/drive/download/)
@@ -44,10 +53,30 @@ zkuste to znovu.
 ## Volitelné Google ID
 
 Na kartě Archiv lze vložit odkaz na složku Google Drive, ve které leží
-registr, a přihlásit se. Aplikace pak každých 5 minut doplní do Q Google ID
-složek, které synchronizační klient už nahrál. Odkaz v M i QR kód na štítku
-tak vedou přímo na Google Drive. Štítek vytištěný dříve, než je ID známé,
-nese v QR evidenční číslo. Bez propojení archiv funguje stejně, jen se Q nedoplňuje.
+registr i složka dokumentů, a použít **Přihlásit Google a propojit**.
+Vyberte účet, který má k archivu přístup. Přihlášení v SimpleDMS je samostatné
+a nenahrazuje přihlášení synchronizačního klienta.
+
+Oficiální beta přijímá účty bez přidání mezi testery. Google zobrazí upozornění
+na neověřenou aplikaci; platí limit 100 uživatelů celkem za dobu projektu.
+Firemní účet může mít přístup zablokovaný správcem Google Workspace.
+SimpleDMS žádá identitu účtu, e-mail a čtení metadat Drive. Google toto
+oprávnění neomezuje na jedinou složku; aplikace sama omezuje čtení na vybraný
+archiv. Obsah dokumentů přes Google API nečte a na Drive nic nezapisuje.
+[Podrobnosti](google-setup.md) · [Ochrana osobních údajů](https://github.com/KoudelkaB/SimpleDMS/wiki/Privacy-Policy)
+
+V režimu s povolenými úpravami aplikace po propojení a potom přibližně každých
+5 minut doplní do prázdného Q Google ID souborů i složek, které synchronizační
+klient už nahrál. Aktualizaci lze spustit tlačítkem **Doplnit Google ID nyní**.
+Obsahuje-li L název souboru nebo složky, páruje jej přesně (bez úvodního `/`), takže
+soubor `100242.pdf` nezamění se složkou `100242`. Pokud není nalezena právě
+jedna odpovídající položka, Q ponechá prázdné; řádky s chybou v L nebo P také
+nepropojí. Počkejte na dokončení synchronizace nebo opravte registr.
+
+Odkaz v M i QR kód na štítku pak vedou přímo na Google Drive. Štítek vytištěný
+dříve, než je ID známé, nese v QR evidenční číslo. Bez propojení archiv funguje
+stejně, jen se Q nedoplňuje. Čtenáři už mohou používat uložené odkazy a Google
+přihlášení v SimpleDMS nepotřebují.
 
 ## Rozpracovanost
 
