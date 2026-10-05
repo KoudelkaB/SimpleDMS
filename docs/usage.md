@@ -66,10 +66,13 @@ poslední načtená kopie registru pouze pro čtení.
 ## Tisk
 
 Na kartě Štítky je vlevo fronta, výběr tiskárny a tlačítka tisku, vpravo
-rozměry archu. Nastavte rozměry archu, nálepek, mezery, okraje a případné
-kalibrační posuny v milimetrech a uložte profil. Kliknutím na pozici vyberte
-začátek; zaškrtněte již použité nebo chybějící nálepky. Evidované archy lze
-vybírat opakovaně i po restartu.
+arch nálepek. **Typ archu** popisuje papír: rozměry, mřížku nálepek, mezery,
+okraje a kalibrační posuny v milimetrech; uložíte jej tlačítkem Uložit typ
+archu. **List** je konkrétní papír daného typu (List 1, List 2…, s počtem
+použitých nálepek); aplikace si u každého pamatuje použité pozice, takže se
+k částečně použitému listu můžete vrátit i po restartu. Nový nepoužitý papír
+založte tlačítkem Nový list. Kliknutím na pozici vyberte začátek; zaškrtněte
+již použité nebo chybějící nálepky.
 
 Fronta je jediný stav tisku: Náhled PDF i Tisknout ukazují a tisknou přesně
 štítky ve frontě a samy nic nemění. Hned po tisku se zobrazí dotaz se všemi
@@ -84,5 +87,5 @@ Na Windows aplikace tiskne přímo na vybranou tiskárnu v měřítku 100 %
 a zkontroluje, že formát papíru tiskárny odpovídá profilu archu. Linux
 portable používá CUPS (`lp`), Flatpak otevře PDF v systémovém prohlížeči.
 Nejprve ověřte zarovnání na obyčejném papíru. Při návratu částečně
-použitého papíru zkontrolujte jeho ID a orientaci. Opakovaný tisk štítku
+použitého papíru vyberte odpovídající list a zkontrolujte orientaci. Opakovaný tisk štítku
 z detailu nepřiděluje nové číslo dokumentu.

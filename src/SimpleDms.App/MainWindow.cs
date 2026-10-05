@@ -135,11 +135,14 @@ public sealed class MainWindow : Window
             sheetStatus,
             Text("Náhled i tisk ukazují přesně frontu. Štítky z ní odejdou a pozice na archu se spotřebují, až po tisku potvrdíte, co se vytisklo. Tiskněte v měřítku 100 %."));
         printPanel.Margin = new(0, 0, 18, 0);
-        var sheetPanel = Stack(Heading("Arch nálepek"), Row(profileChoice, sheetChoice), profileName);
+        // The profile is the paper type (geometry); a sheet is one physical piece of label paper whose used positions are remembered.
+        ToolTip.SetTip(profileChoice, "Typ papíru s nálepkami: rozměry, mřížka, okraje a kalibrace."); ToolTip.SetTip(sheetChoice, "Konkrétní list nálepek tohoto typu. Aplikace si pamatuje jeho použité pozice, takže se k částečně použitému listu můžete vrátit.");
+        var sheetPanel = Stack(Heading("Arch nálepek"), Form(("Typ archu", profileChoice), ("List", Row(sheetChoice, Action("Nový list", NewSheetAsync))), ("Název typu", profileName)),
+            Text("List je konkrétní papír s nálepkami; vyberte ten, který vkládáte do tiskárny. Nový list založte, když vložíte nepoužitý papír."));
         var inputs = new Grid { ColumnDefinitions = new("*,*,*,*"), RowDefinitions = new("Auto,Auto,Auto") };
         var fields = new[] { ("Rows", "Řádky"), ("Columns", "Sloupce"), ("PaperWidth", "Papír šířka mm"), ("PaperHeight", "Papír výška mm"), ("Width", "Nálepka šířka mm"), ("Height", "Nálepka výška mm"), ("Left", "Levý okraj mm"), ("Top", "Horní okraj mm"), ("GapX", "Mezera X mm"), ("GapY", "Mezera Y mm"), ("OffsetX", "Posun X mm"), ("OffsetY", "Posun Y mm") };
         for (var i = 0; i < fields.Length; i++) { var (key, title) = fields[i]; var input = new TextBox(); dimensions[key] = input; var group = Stack(Text(title), input); group.Margin = new(0, 0, 8, 8); Grid.SetRow(group, i / 4); Grid.SetColumn(group, i % 4); inputs.Children.Add(group); }
-        sheetPanel.Children.Add(inputs); sheetPanel.Children.Add(Row(includeQr, Action("Uložit profil", SaveProfileAsync), Action("Nový arch", NewSheetAsync)));
+        sheetPanel.Children.Add(inputs); sheetPanel.Children.Add(Row(includeQr, Action("Uložit typ archu", SaveProfileAsync)));
         sheetPanel.Children.Add(Text("Kliknutím určíte začátek; zaškrtávátko označuje již použitou nebo chybějící nálepku.")); sheetPanel.Children.Add(labelGrid);
         var labelPanel = new Grid { ColumnDefinitions = new("380,*") };
         labelPanel.Children.Add(new ScrollViewer { Content = printPanel });
@@ -200,7 +203,9 @@ public sealed class MainWindow : Window
         timer.Tick += async (_, _) => await TickAsync(); timer.Start();
         Closed += (_, _) => { timer.Stop(); operation?.Cancel(); };
     }
-    sealed record SheetOption(LabelSheet Sheet, int Capacity) { public override string ToString() => "Arch " + Sheet.Id[..6] + $" — {Sheet.Used.Count}/{Capacity}"; }
+    sealed record SheetOption(LabelSheet Sheet, int Number, int Capacity) { public override string ToString() => $"List {Number} · použito {Sheet.Used.Count} z {Capacity}"; }
+    // Sheets are numbered in the order they were started for the profile; the random ID means nothing to the user.
+    int SheetNumber(LabelSheet sheet) { var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == settings.Labels.Key).ToList(); var index = sheets.FindIndex(x => x.Id == sheet.Id); return (index < 0 ? sheets.Count : index) + 1; }
     sealed record CategoryOption(string Code, string Name) { public override string ToString() => Name.Length > 0 ? $"{Code} – {Name}" : Code; }
     CancellationToken Token => operation?.Token ?? CancellationToken.None;
     static TextBlock Text(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap };
@@ -501,7 +506,7 @@ public sealed class MainWindow : Window
     Task SaveProfileAsync()
     {
         var p = new LabelProfile { Name = profileName.Text ?? "Arch", Qr = includeQr.IsChecked == true }; foreach (var x in dimensions) { var prop = typeof(LabelProfile).GetProperty(x.Key)!; var value = float.Parse((x.Value.Text ?? "").Replace(',', '.'), CultureInfo.InvariantCulture); prop.SetValue(p, prop.PropertyType == typeof(int) ? (object)checked((int)value) : value); }
-        p.Validate(); settings.LabelProfiles[p.Name] = p; settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(x => x.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; Save(); FillProfile(); UpdateLabels(); status.Text = "Profil archu uložen. Rozměry ověřte zkušebním tiskem v měřítku 100 %."; return Task.CompletedTask;
+        p.Validate(); settings.LabelProfiles[p.Name] = p; settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(x => x.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; Save(); FillProfile(); UpdateLabels(); status.Text = "Typ archu uložen. Rozměry ověřte zkušebním tiskem v měřítku 100 %."; return Task.CompletedTask;
     }
     Task NewSheetAsync() { settings.Sheet = new() { ProfileKey = settings.Labels.Key }; Save(); UpdateLabels(); return Task.CompletedTask; }
     void UpdateLabels(bool updateSheets = true)
@@ -518,8 +523,11 @@ public sealed class MainWindow : Window
             var button = new Button { Content = $"{i / p.Columns + 1}:{i % p.Columns + 1}" + (first.TryGetValue(i, out var code) ? "  " + code : ""), HorizontalAlignment = HorizontalAlignment.Stretch };
             button.Click += (_, _) => { s.Start = index; Save(); UpdateLabels(); }; var cell = Stack(button, used); cell.Margin = new(2); Grid.SetRow(cell, i / p.Columns); Grid.SetColumn(cell, i % p.Columns); labelGrid.Children.Add(cell);
         }
-        var next = s.Next(p); sheetStatus.Text = $"Arch {s.Id[..6]} · použito {s.Used.Count}/{p.Capacity} · " + (next == p.Capacity ? "plný" : $"další pozice {next / p.Columns + 1}:{next % p.Columns + 1}") + $" · fronta {settings.LabelQueue.Count}";
-        if (updateSheets) { filling = true; var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == p.Key).Select(x => new SheetOption(x, p.Capacity)).ToList(); sheetChoice.ItemsSource = sheets; sheetChoice.SelectedItem = sheets.FirstOrDefault(x => x.Sheet.Id == s.Id); filling = false; }
+        var next = s.Next(p); sheetStatus.Text = $"List {SheetNumber(s)} · použito {s.Used.Count} z {p.Capacity} · " + (next == p.Capacity ? "plný" : $"další pozice {next / p.Columns + 1}:{next % p.Columns + 1}") + $" · fronta {settings.LabelQueue.Count}";
+        // The current sheet is listed even before it is first saved.
+        if (s.ProfileKey.Length == 0) s.ProfileKey = p.Key;
+        settings.LabelSheets.TryAdd(s.Id, s);
+        if (updateSheets) { filling = true; var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == p.Key).Select((x, i) => new SheetOption(x, i + 1, p.Capacity)).ToList(); sheetChoice.ItemsSource = sheets; sheetChoice.SelectedItem = sheets.FirstOrDefault(x => x.Sheet.Id == s.Id); filling = false; }
     }
     // The queue is the only state: preview and print always show exactly the queue, and labels leave it
     // (and consume sheet positions) only when the result of the print is confirmed right afterwards.
@@ -551,7 +559,7 @@ public sealed class MainWindow : Window
         var picks = plan.Placements.ToDictionary(x => x, x => new CheckBox
         {
             IsChecked = true,
-            Content = (plan.Pages.Count > 1 ? $"Arch {x.Page + 1}, " : "") + $"pozice {x.Position / columns + 1}:{x.Position % columns + 1} — {x.Label.Code} {x.Label.Title}"
+            Content = (plan.Pages.Count > 1 ? $"List {x.Page + 1}, " : "") + $"pozice {x.Position / columns + 1}:{x.Position % columns + 1} — {x.Label.Code} {x.Label.Title}"
         });
         var outcome = PrintOutcome.Nothing; var answered = false;
         var dialog = new Window { Title = "Výsledek tisku", Width = 640, Height = 480, WindowStartupLocation = WindowStartupLocation.CenterOwner };

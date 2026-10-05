@@ -53,10 +53,10 @@ public static class LabelPlanner
     public static PrintPlan Plan(LabelProfile profile, LabelSheet sheet, IReadOnlyList<LabelItem> labels)
     {
         profile.Validate();
-        if (sheet.ProfileKey.Length > 0 && sheet.ProfileKey != profile.Key) throw new InvalidOperationException("Arch patří jinému profilu. Vyberte odpovídající arch nebo založte nový.");
+        if (sheet.ProfileKey.Length > 0 && sheet.ProfileKey != profile.Key) throw new InvalidOperationException("List patří jinému typu archu. Vyberte odpovídající list nebo založte nový.");
         if (labels.Count == 0) throw new InvalidOperationException("Ve frontě nejsou štítky.");
         var available = Enumerable.Range(Math.Clamp(sheet.Start, 0, profile.Capacity), profile.Capacity - Math.Clamp(sheet.Start, 0, profile.Capacity)).Where(i => !sheet.Used.Contains(i)).ToList();
-        if (available.Count == 0) throw new InvalidOperationException("Arch je plný. Vložte nový papír a zvolte Nový arch.");
+        if (available.Count == 0) throw new InvalidOperationException("List nálepek je plný. Vložte nový papír a zvolte Nový list.");
         var pages = new List<PrintPage>(); var page = new PrintPage(sheet.Id, []); pages.Add(page); int at = 0;
         foreach (var label in labels)
         {
