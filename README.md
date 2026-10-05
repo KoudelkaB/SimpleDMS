@@ -19,14 +19,30 @@ souborové operace a fungují i offline; nahrání do cloudu obstará synchroniz
   ruční pozice, výběr tiskárny a potvrzení skutečného výsledku tisku.
 
 [Používání](docs/usage.md) · [Google konfigurace správce](docs/google-setup.md) ·
-[Vydávání balíčků](PUBLISHING.md) · [Licence závislostí](THIRD_PARTY_NOTICES.md)
+[Vydávání balíčků](PUBLISHING.md) · [Licence závislostí](THIRD_PARTY_NOTICES.md) ·
+[Ochrana osobních údajů](https://github.com/KoudelkaB/SimpleDMS/wiki/Privacy-Policy)
 
 ## Instalace
 
-Balíčky nabízí [Releases](https://github.com/KoudelkaB/SimpleDMS/releases):
-Windows Inno Setup EXE / portable ZIP a Linux Flatpak / portable tar.gz.
-Obsahují .NET runtime. Pro práci s archivem stačí synchronizační klient;
-Google OAuth Desktop klient je potřeba jen pro volitelné doplňování Google ID.
+První veřejná beta [0.1.0-beta.1](https://github.com/KoudelkaB/SimpleDMS/releases/tag/v0.1.0-beta.1)
+je dostupná pro Windows x64 (Inno Setup EXE / portable ZIP) a Linux x64
+(Flatpak / portable tar.gz). Další verze najdete v
+[Releases](https://github.com/KoudelkaB/SimpleDMS/releases); u balíčků je také
+soubor `SHA256SUMS.txt` s kontrolními součty. Balíčky obsahují .NET runtime.
+Betu nejprve vyzkoušejte na kopii archivu.
+
+Oficiální balíčky už obsahují konfiguraci Google OAuth Desktop klienta.
+Pro volitelné doplňování Google ID stačí na kartě Archiv zadat odkaz na
+root archivu a přihlásit se svým Google účtem; není potřeba vlastní Google
+Cloud projekt ani import klientského JSON. Přihlášení synchronizačního
+klienta a přihlášení SimpleDMS jsou samostatná.
+
+Oficiální OAuth aplikace je od 5. 10. 2026 v režimu **External / In production**.
+Účty není nutné přidávat mezi testery. Aplikace zatím není ověřená Googlem:
+při autorizaci zobrazí upozornění a platí limit **100 uživatelů celkem za
+dobu projektu**. Správce Google Workspace může přístup omezit.
+Podrobnosti a požadovaná oprávnění uvádí [Google konfigurace](docs/google-setup.md).
+Pro místní práci s archivem Google přihlášení v SimpleDMS není nutné.
 
 Linux portable potřebuje X11/XWayland, fontconfig a pro přímý tisk CUPS;
 pro volitelné Google ID libsecret (secret-tool) s odemčenou klíčenkou.
@@ -38,6 +54,8 @@ Ve VS Code otevřete kořenovou složku projektu a stiskněte F5 (konfigurace
 `SimpleDMS`). Je potřeba .NET 10 SDK a rozšíření Microsoft C#.
 F5 aplikaci nejprve sestaví v režimu Debug. Pro volitelné Google přihlášení se
 použije místní `oauth-client.json` v kořeni projektu, který se nekopíruje do Gitu.
+Nový klon ani fork tento soubor a GitHub Actions secrets neobsahuje; pro
+vlastní sestavení připravte desktop klienta podle [návodu](docs/google-setup.md).
 
 ```sh
 dotnet restore SimpleDMS.slnx
@@ -58,8 +76,9 @@ Jeden správce zapisuje, ostatní nahlížejí. XLSX zůstává zdrojem metadat.
 Zápis probíhá na místě pod výhradním zámkem souboru: je-li registr otevřený
 v Excelu, aplikace zápis odmítne místo přepsání cizí změny. Když synchronizační
 klient registr aktualizuje, aplikace jej do 15 sekund znovu načte. Registry
-musí mít list Databáze, A–F jako N1–N6 a G jako Název; R je explicitní stav,
-Q je Drive ID.
+musí mít list Databáze, A–F jako N1–N6 a G jako Název. Q je Drive ID souboru
+nebo složky. Rozpracovanost určuje oranžová výplň celého řádku A–Q
+(`FFC000`); samostatný stavový sloupec R není potřeba.
 
 Před prvním ostrým použitím ověřte zarovnání štítků s konkrétní tiskárnou.
 Automatické testy neprovádějí přihlášení skutečného Google uživatele ani fyzický tisk.
