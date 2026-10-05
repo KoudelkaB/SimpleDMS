@@ -38,6 +38,8 @@ public sealed class UiTests
             text.Text = "zadost";
             WaitFor(() => window.GetLogicalDescendants().OfType<TextBlock>().Any(t => t.Text == "1 z 2 dokumentů"));
             Assert.Contains(window.GetLogicalDescendants().OfType<TextBlock>(), t => t.Text == "1 z 2 dokumentů");
+            // Without a category sheet all two-digit categories stay available after the first records.
+            Assert.Contains(window.GetLogicalDescendants().OfType<ComboBox>(), x => x.PlaceholderText == "Vyberte kategorii" && x.ItemsSource!.Cast<object>().Count() == 100);
             window.Close();
         }, CancellationToken.None);
     }

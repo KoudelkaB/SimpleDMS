@@ -32,6 +32,8 @@ public sealed class MainWindow : Window
     readonly Button problemsButton = new() { IsVisible = false };
     readonly TextBlock detailProblem = new() { TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Firebrick, FontWeight = FontWeight.SemiBold, IsVisible = false };
     bool onlyProblems;
+    // Sheet type, sheet choice and positions; locked while a print and its confirmation are in progress.
+    StackPanel sheetPanel = null!;
     readonly TextBlock syncClient = new() { TextWrapping = TextWrapping.Wrap, FontWeight = FontWeight.SemiBold };
     readonly TextBox rootPath = new() { PlaceholderText = "Místní složka, ve které leží registr XLSX a složka dokumentů" };
     readonly TextBox archiveName = new() { PlaceholderText = "Název nového archivu", Width = 300 };
@@ -142,7 +144,7 @@ public sealed class MainWindow : Window
         printPanel.Margin = new(0, 0, 18, 0);
         // The profile is the paper type (geometry); a sheet is one physical piece of label paper whose used positions are remembered.
         ToolTip.SetTip(profileChoice, "Typ papíru s nálepkami: rozměry, mřížka, okraje a kalibrace."); ToolTip.SetTip(sheetChoice, "Konkrétní list nálepek tohoto typu. Aplikace si pamatuje jeho použité pozice, takže se k částečně použitému listu můžete vrátit.");
-        var sheetPanel = Stack(Heading("Arch nálepek"), Form(("Typ archu", profileChoice), ("List", Row(sheetChoice, Action("Nový list", NewSheetAsync))), ("Název typu", profileName)),
+        sheetPanel = Stack(Heading("Arch nálepek"), Form(("Typ archu", profileChoice), ("List", Row(sheetChoice, Action("Nový list", NewSheetAsync))), ("Název typu", profileName)),
             Text("List je konkrétní papír s nálepkami; vyberte ten, který vkládáte do tiskárny. Nový list založte, když vložíte nepoužitý papír."));
         var inputs = new Grid { ColumnDefinitions = new("*,*,*,*"), RowDefinitions = new("Auto,Auto,Auto") };
         var fields = new[] { ("Rows", "Řádky"), ("Columns", "Sloupce"), ("PaperWidth", "Papír šířka mm"), ("PaperHeight", "Papír výška mm"), ("Width", "Nálepka šířka mm"), ("Height", "Nálepka výška mm"), ("Left", "Levý okraj mm"), ("Top", "Horní okraj mm"), ("GapX", "Mezera X mm"), ("GapY", "Mezera Y mm"), ("OffsetX", "Posun X mm"), ("OffsetY", "Posun Y mm") };
@@ -312,8 +314,8 @@ public sealed class MainWindow : Window
     IReadOnlyList<CategoryOption> Categories()
     {
         var known = catalog?.Categories ?? new Dictionary<string, string>();
-        // A new archive without "Kódování dokumentů" still needs some category to start with.
-        return (known.Count > 0 ? known.Keys : Enumerable.Range(0, 100).Select(i => i.ToString("D2", CultureInfo.InvariantCulture)))
+        // Without a "Kódování dokumentů" sheet every two-digit category stays available, not only those already used.
+        return (catalog?.CategoriesDefined == true ? known.Keys : known.Keys.Concat(Enumerable.Range(0, 100).Select(i => i.ToString("D2", CultureInfo.InvariantCulture))).Distinct())
             .Order().Select(code => new CategoryOption(code, known.GetValueOrDefault(code) ?? "")).ToList();
     }
     string CategoryName(string code) => catalog?.Categories.GetValueOrDefault(code) is { Length: > 0 } name ? code + " – " + name : code;
@@ -559,9 +561,17 @@ public sealed class MainWindow : Window
         var note = withoutLink > 0 ? $" Bez Google ID ({Count(withoutLink, "štítek", "štítky", "štítků")}) nese QR evidenční číslo." : "";
         if (print)
         {
-            status.Text = "Tisk…";
-            status.Text = await LabelPrinter.PrintAsync(settings.Labels, plan, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + note;
-            await ConfirmPrintAsync(plan); return;
+            // The result is confirmed against the profile and sheet that were printed on, which cannot change meanwhile.
+            var (profile, sheet) = (settings.Labels, settings.Sheet);
+            sheetPanel.IsEnabled = false;
+            try
+            {
+                status.Text = "Tisk…";
+                status.Text = await LabelPrinter.PrintAsync(profile, plan, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + note;
+                await ConfirmPrintAsync(plan, profile, sheet);
+            }
+            finally { sheetPanel.IsEnabled = true; }
+            return;
         }
         var folder = Path.Combine(store.Root, "labels"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, plan.Id + ".pdf");
         LabelPdf.Export(path, settings.Labels, plan);
@@ -570,9 +580,9 @@ public sealed class MainWindow : Window
     enum PrintOutcome { Nothing, All, Selection }
     // Opens right after printing with every label preselected, so a successful print takes one click (or Enter).
     // It needs an answer: without it the queue and the sheet would no longer match the paper.
-    async Task ConfirmPrintAsync(PrintPlan plan)
+    async Task ConfirmPrintAsync(PrintPlan plan, LabelProfile profile, LabelSheet printedSheet)
     {
-        var columns = settings.Labels.Columns;
+        var columns = profile.Columns;
         var picks = plan.Placements.ToDictionary(x => x, x => new CheckBox
         {
             IsChecked = true,
@@ -595,10 +605,10 @@ public sealed class MainWindow : Window
         await dialog.ShowDialog(this);
         if (outcome == PrintOutcome.Nothing) { status.Text = "Nic nebylo vytištěno. Štítky zůstávají ve frontě, pozice archu jsou volné."; return; }
         var confirmed = outcome == PrintOutcome.All ? plan.Placements.ToList() : picks.Where(x => x.Value.IsChecked == true).Select(x => x.Key).ToList();
-        var result = LabelPlanner.Confirm(settings.Labels, settings.Sheet, plan, confirmed, settings.LabelQueue);
+        var result = LabelPlanner.Confirm(profile, printedSheet, plan, confirmed, settings.LabelQueue);
         foreach (var page in plan.Pages.Select((p, i) => (Page: p, Index: i)))
         { var sheet = settings.LabelSheets.GetValueOrDefault(page.Page.SheetId) ?? new() { Id = page.Page.SheetId, ProfileKey = plan.ProfileKey }; foreach (var p in confirmed.Where(x => x.Page == page.Index)) sheet.Used.Add(p.Position); settings.LabelSheets[sheet.Id] = sheet; }
-        settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; Save(); UpdateLabels();
+        settings.Labels = profile; settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; Save(); FillProfile(); UpdateLabels();
         status.Text = $"Potvrzeno {confirmed.Count} z {Count(plan.Placements.Count, "štítku", "štítků", "štítků")}." + (result.Queue.Count > 0 ? $" Ve frontě zůstává {result.Queue.Count}." : "");
     }
     void ImportOAuth(string json) { var root = JsonDocument.Parse(json).RootElement; var item = root.TryGetProperty("installed", out var installed) ? installed : root; settings.ClientId = item.GetProperty("client_id").GetString() ?? ""; settings.ClientSecret = item.TryGetProperty("client_secret", out var s) ? s.GetString() ?? "" : ""; }

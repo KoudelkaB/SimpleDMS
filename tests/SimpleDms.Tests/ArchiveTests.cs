@@ -7,6 +7,7 @@ public sealed class FakeDrive : IDriveClient
 {
     public Dictionary<string, DriveItem> Items = [];
     public List<string> MetadataReads = [], Listings = [];
+    public Action<string>? OnList;
     public FakeDrive()
     {
         Items["root"] = new("root", "Databáze", "application/vnd.google-apps.folder", []);
@@ -15,7 +16,7 @@ public sealed class FakeDrive : IDriveClient
     }
     public DriveItem Add(string id, string name, string parent, bool folder = true) => Items[id] = new(id, name, folder ? "application/vnd.google-apps.folder" : "application/pdf", [parent]);
     public Task<DriveItem> GetAsync(string id, CancellationToken ct = default) { MetadataReads.Add(id); return Task.FromResult(Items[id]); }
-    public Task<IReadOnlyList<DriveItem>> ListAsync(string parent, CancellationToken ct = default) { Listings.Add(parent); return Task.FromResult<IReadOnlyList<DriveItem>>(Items.Values.Where(x => x.Parents.Contains(parent)).ToList()); }
+    public Task<IReadOnlyList<DriveItem>> ListAsync(string parent, CancellationToken ct = default) { Listings.Add(parent); OnList?.Invoke(parent); return Task.FromResult<IReadOnlyList<DriveItem>>(Items.Values.Where(x => x.Parents.Contains(parent)).ToList()); }
 }
 public sealed class ArchiveTests
 {
@@ -160,6 +161,29 @@ public sealed class ArchiveTests
         var offline = p with { Root = Path.Combine(p.Root, "disconnected") };
         System.IO.File.Copy(service.CachedWorkbook(p), service.CachedWorkbook(offline));
         var (catalog, cached) = service.Load(offline); Assert.True(cached); Assert.Single(catalog.Records);
+    }
+    [Fact]
+    public async Task AttachingToRowWithAnotherDocumentsFileIsRefused()
+    {
+        var (service, p, dir) = Archive();
+        var c = new WorkbookCatalog(System.IO.File.ReadAllBytes(p.WorkbookPath));
+        c.Append("100027", new("10", "Původní"), "/100027A10.doc"); c.Append("100034", new("10", "Zkopírovaný řádek"), "/100027A10.doc");
+        System.IO.File.WriteAllBytes(p.WorkbookPath, c.Save()); File(p.DocumentsPath, "100027A10.doc", "original");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.AddAsync(p, new("10", "Zkopírovaný řádek"), [File(dir, "scan.pdf", "scan")], "100034"));
+        Assert.Equal(["100027A10.doc"], Directory.EnumerateFileSystemEntries(p.DocumentsPath).Select(Path.GetFileName));
+        Assert.Equal("original", System.IO.File.ReadAllText(Path.Combine(p.DocumentsPath, "100027A10.doc")));
+    }
+    [Fact]
+    public async Task LinkingSkipsRecordChangedWhileDriveWasQueried()
+    {
+        var (service, p, dir) = Archive(); var drive = new FakeDrive();
+        var single = await service.AddAsync(p, new("10", "Soubor"), [File(dir, "a.pdf", "a")]);
+        drive.Add("file-id", "100001.pdf", "docs", folder: false);
+        p = p with { DriveRootId = "root", AccountId = "u", AccountEmail = "u@example.test" };
+        // The document becomes a folder while the documents folder is being listed.
+        drive.OnList = parent => { if (parent == "docs") { drive.OnList = null; service.AddAsync(p, new("10", "Soubor"), [File(dir, "b.pdf", "b")], single.Code).GetAwaiter().GetResult(); } };
+        Assert.Equal(0, await service.LinkDriveIdsAsync(p, drive));
+        var record = Assert.Single(service.Load(p).Catalog.Records); Assert.Equal("/100001", record.RelativePath); Assert.Equal("", record.DriveId);
     }
     [Fact]
     public async Task LinkingFillsDriveIdsOfUploadedFolders()

@@ -122,6 +122,10 @@ public sealed class ArchiveService(LocalStore store)
                 {
                     var copier = new Copier(sources, progress, ct);
                     var existing = old == null ? null : LocalPath(p, old);
+                    // Never move or extend an attachment that belongs to another document (a copied L in the register).
+                    if (old?.Problem.Length > 0) throw new InvalidOperationException($"Záznam {code} má chybu v registru: {old.Problem}");
+                    if (existing != null && !Regex.IsMatch(Path.GetFileName(existing), "^" + code + "(?![0-9])"))
+                        throw new InvalidOperationException($"Příloha {Path.GetFileName(existing)} nepatří k dokumentu {code}. Opravte sloupec L v registru.");
                     if (existing == null && sources.Count == 1)
                     {
                         var source = sources[0]; var folder = Directory.Exists(source);
@@ -240,25 +244,28 @@ public sealed class ArchiveService(LocalStore store)
     {
         if (!p.DriveLinked) return 0;
         var (catalog, cached) = await Task.Run(() => Load(p), ct);
-        var missing = catalog.Records.Where(r => r.DriveId.Length == 0 && r.Electronic).ToList();
+        // Rows whose L names another document would match that document's item, so they are left alone.
+        var missing = catalog.Records.Where(r => r.DriveId.Length == 0 && r.Electronic && r.Problem.Length == 0).ToList();
         if (missing.Count == 0 || cached) return 0;
         var drive = new ArchiveDriveClient(client, p.DriveRootId!);
         var documents = (await drive.ListAsync(p.DriveRootId!, ct)).Where(x => x.IsFolder && x.Name == p.DocumentsName).ToList();
         if (documents.Count != 1) throw new InvalidOperationException($"Ve složce Google Drive {(documents.Count == 0 ? "chybí" : "je vícekrát")} složka {p.DocumentsName}. Zkontrolujte odkaz na root archivu.");
         var children = (await drive.ListAsync(documents[0].Id, ct)).Where(x => x.MimeType != "application/vnd.google-apps.shortcut").ToList();
-        var found = new Dictionary<string, string>();
+        var found = new Dictionary<string, (string Id, string Path)>();
         foreach (var record in missing)
         {
             var name = record.RelativePath.Trim().TrimStart('/');
             var matches = name.Length > 0 && !name.Contains('/') ? children.Where(x => x.Name == name).ToList() : [];
             if (matches.Count == 0) matches = children.Where(x => Regex.IsMatch(x.Name, "^" + record.Code + "(?![0-9])")).ToList();
-            if (matches.Count == 1) found[record.Code] = matches[0].Id;
+            if (matches.Count == 1) found[record.Code] = (matches[0].Id, record.RelativePath);
         }
         if (found.Count == 0) return 0;
         return await Task.Run(() => EditAsync(p, c =>
         {
             var changed = 0;
-            foreach (var (code, id) in found) if (c.Records.Any(r => r.Code == code && r.DriveId.Length == 0)) { c.SetDriveId(code, id); changed++; }
+            // The register may have changed while Drive was queried (e.g. a single file became a folder);
+            // an ID is written only if the record still points at the attachment it was found for.
+            foreach (var (code, (id, path)) in found) if (c.Records.Any(r => r.Code == code && r.DriveId.Length == 0 && r.RelativePath == path)) { c.SetDriveId(code, id); changed++; }
             return Task.FromResult(changed);
         }, ct), ct);
     }

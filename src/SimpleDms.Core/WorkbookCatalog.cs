@@ -20,6 +20,8 @@ public sealed class WorkbookCatalog
     public List<string> Warnings { get; } = [];
     public IReadOnlyList<DocumentRecord> Records { get; private set; } = [];
     public IReadOnlyDictionary<string, string> Categories { get; private set; } = new Dictionary<string, string>();
+    // True when the "Kódování dokumentů" sheet defines categories; otherwise Categories only lists codes in use.
+    public bool CategoriesDefined { get; private set; }
     public WorkbookCatalog(byte[] bytes)
     {
         using var zip = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
@@ -64,6 +66,7 @@ public sealed class WorkbookCatalog
             }
         }
         Reload();
+        CategoriesDefined = categories.Count > 0;
         foreach (var code in Records.Select(r => r.Category).Distinct()) categories.TryAdd(code, "");
         Categories = categories;
     }
