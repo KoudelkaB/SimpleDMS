@@ -184,6 +184,11 @@ public sealed class ArchiveTests
         drive.OnList = parent => { if (parent == "docs") { drive.OnList = null; service.AddAsync(p, new("10", "Soubor"), [File(dir, "b.pdf", "b")], single.Code).GetAwaiter().GetResult(); } };
         Assert.Equal(0, await service.LinkDriveIdsAsync(p, drive));
         var record = Assert.Single(service.Load(p).Catalog.Records); Assert.Equal("/100001", record.RelativePath); Assert.Equal("", record.DriveId);
+        // Next pass: Drive still holds only the former file, which must not be taken for the new folder.
+        Assert.Equal(0, await service.LinkDriveIdsAsync(p, drive)); Assert.Equal("", Assert.Single(service.Load(p).Catalog.Records).DriveId);
+        // Once the sync client has uploaded the folder, it gets its own ID.
+        drive.Add("folder-id", "100001", "docs");
+        Assert.Equal(1, await service.LinkDriveIdsAsync(p, drive)); Assert.Equal("folder-id", Assert.Single(service.Load(p).Catalog.Records).DriveId);
     }
     [Fact]
     public async Task LinkingFillsDriveIdsOfUploadedFolders()

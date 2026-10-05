@@ -255,8 +255,11 @@ public sealed class ArchiveService(LocalStore store)
         foreach (var record in missing)
         {
             var name = record.RelativePath.Trim().TrimStart('/');
-            var matches = name.Length > 0 && !name.Contains('/') ? children.Where(x => x.Name == name).ToList() : [];
-            if (matches.Count == 0) matches = children.Where(x => Regex.IsMatch(x.Name, "^" + record.Code + "(?![0-9])")).ToList();
+            // A known name in L must match exactly: until the sync client uploads a new folder "100001", Drive may still
+            // hold the former "100001.pdf", which a match by number would wrongly pick. The number is only a fallback
+            // for rows without a usable L.
+            var matches = name.Length > 0 && !name.Contains('/') ? children.Where(x => x.Name == name).ToList()
+                : children.Where(x => Regex.IsMatch(x.Name, "^" + record.Code + "(?![0-9])")).ToList();
             if (matches.Count == 1) found[record.Code] = (matches[0].Id, record.RelativePath);
         }
         if (found.Count == 0) return 0;
