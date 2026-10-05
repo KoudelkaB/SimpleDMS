@@ -44,7 +44,7 @@ public sealed class MainWindow : Window
     readonly TextBox newTitle = new() { PlaceholderText = "Název dokumentu" };
     readonly AutoCompleteBox newAuthor = new() { PlaceholderText = "Autor / účastníci", FilterMode = AutoCompleteFilterMode.Contains, MinimumPrefixLength = 1 };
     readonly TextBox newReference = new() { PlaceholderText = "Reference (např. číslo smlouvy)" };
-    readonly CalendarDatePicker newValidity = new() { SelectedDateFormat = CalendarDatePickerFormat.Custom, CustomDateFormatString = "d.M.yyyy", PlaceholderText = "d.M.rrrr", Width = 180, FirstDayOfWeek = DayOfWeek.Monday };
+    readonly TextBox newValidity = new() { PlaceholderText = "d.M.rrrr", Width = 140 };
     readonly TextBox newNotes = new() { PlaceholderText = "Klíčová slova, poznámky a fyzické umístění (skříň / šanon)", AcceptsReturn = true, MinHeight = 70, TextWrapping = TextWrapping.Wrap };
     readonly CheckBox newPending = new() { Content = "Rozpracovaný dokument" };
     readonly ListBox filesList = new() { MinHeight = 80, MaxHeight = 200 };
@@ -116,7 +116,7 @@ public sealed class MainWindow : Window
             filesList, Text("Soubory i složky (i najednou) lze také přetáhnout z Průzkumníku do seznamu. Jedna příloha se uloží pod číslem dokumentu (např. 100242.pdf nebo složka 100242), více příloh do složky pojmenované číslem. Papírový dokument může být bez příloh."));
         AddTab("Přidat dokument", Stack(Heading("Nový dokument"),
             Form(("Kategorie", Row(newCategory, nextCode)), ("Název", newTitle), ("Autor / účastníci", newAuthor), ("Reference", newReference),
-                ("Platnost", Row(newValidity, Action("Bez data", () => { newValidity.SelectedDate = null; return Task.CompletedTask; }))), ("Poznámky", newNotes), ("", newPending), ("Přílohy", attachments)),
+                ("Platnost", DateField(newValidity)), ("Poznámky", newNotes), ("", newPending), ("Přílohy", attachments)),
             saveDocument));
         newCategory.SelectionChanged += (_, _) => _ = UpdateNextCodeAsync();
         DragDrop.SetAllowDrop(filesList, true);
@@ -422,15 +422,41 @@ public sealed class MainWindow : Window
     async Task PickAttachmentsAsync(bool folders) { foreach (var path in await PickAsync("Přílohy dokumentu", folders)) if (!attachmentPaths.Contains(path)) attachmentPaths.Add(path); UpdateFiles(); }
     void UpdateFiles() => filesList.ItemsSource = attachmentPaths.Select(x => Path.GetFileName(x) + (Directory.Exists(x) ? "  (složka)" : "")).ToList();
     Progress<string> Progress() => new(text => status.Text = text);
+    // A text field for typing the date and a calendar button; the stock date picker showed today's day as a bare number.
+    static Control DateField(TextBox box)
+    {
+        var calendar = new Avalonia.Controls.Calendar { FirstDayOfWeek = DayOfWeek.Monday, SelectionMode = CalendarSelectionMode.SingleDate };
+        var flyout = new Flyout { Content = calendar, Placement = PlacementMode.BottomEdgeAlignedLeft };
+        var icon = new PathIcon { Width = 16, Height = 16, Data = StreamGeometry.Parse("M7 2h2v2h6V2h2v2h2a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2V2zM5 9v10h14V9H5zm2 2h3v3H7v-3z") };
+        var button = new Button { Content = icon, Flyout = flyout, Margin = new(6, 0, 0, 0) }; ToolTip.SetTip(button, "Vybrat datum v kalendáři");
+        var syncing = false;
+        flyout.Opening += (_, _) =>
+        {
+            var date = WorkbookCatalog.ParseDate(box.Text ?? "");
+            syncing = true; calendar.SelectedDate = date; calendar.DisplayDate = date ?? DateTime.Today; syncing = false;
+        };
+        calendar.SelectedDatesChanged += (_, _) =>
+        {
+            if (syncing || calendar.SelectedDate is not { } date) return;
+            box.Text = date.ToString("d.M.yyyy", CultureInfo.InvariantCulture); flyout.Hide();
+        };
+        return Row(box, button);
+    }
+    string Validity()
+    {
+        var text = newValidity.Text?.Trim() ?? "";
+        if (text.Length == 0) return "";
+        return WorkbookCatalog.ParseDate(text)?.ToString("d.M.yyyy", CultureInfo.InvariantCulture) ?? throw new InvalidOperationException("Platnost zadejte jako datum d.M.rrrr (např. 31.12.2030), nebo ji nechte prázdnou.");
+    }
     async Task SaveDocumentAsync()
     {
         RequireWrite();
         var code = (newCategory.SelectedItem as CategoryOption)?.Code ?? throw new InvalidOperationException("Vyberte kategorii.");
         var draft = new DocumentDraft(code, newTitle.Text?.Trim() ?? "", newReference.Text?.Trim() ?? "", newAuthor.Text?.Trim() ?? "",
-            newValidity.SelectedDate is { } date ? date.ToString("d.M.yyyy", CultureInfo.InvariantCulture) : "", newNotes.Text?.Trim() ?? "", newPending.IsChecked == true);
+            Validity(), newNotes.Text?.Trim() ?? "", newPending.IsChecked == true);
         status.Text = "Ukládání dokumentu…";
         var record = await service.AddAsync(Profile(), draft, attachmentPaths, null, Progress(), Token);
-        Queue(record); attachmentPaths.Clear(); UpdateFiles(); newTitle.Text = ""; newReference.Text = ""; newNotes.Text = ""; newValidity.SelectedDate = null; newPending.IsChecked = false;
+        Queue(record); attachmentPaths.Clear(); UpdateFiles(); newTitle.Text = ""; newReference.Text = ""; newNotes.Text = ""; newValidity.Text = ""; newPending.IsChecked = false;
         await LoadCatalogAsync(); ShowDocuments(); query.Text = ""; records.SelectedItem = (records.ItemsSource as IEnumerable<DocumentRecord>)?.FirstOrDefault(x => x.Code == record.Code);
         status.Text = $"Dokument {record.Code} uložen. Štítek je ve frontě." + (record.Electronic ? " Přílohy na Google Drive nahraje synchronizační klient." : "");
     }
