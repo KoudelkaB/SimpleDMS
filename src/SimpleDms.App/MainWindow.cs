@@ -19,7 +19,7 @@ public sealed class MainWindow : Window
     readonly ArchiveService service;
     GoogleAuth auth = null!;
     WorkbookCatalog? catalog;
-    bool busy, linking, cached, driveOnline, filling;
+    bool busy, linking, cached, driveOnline, filling, switching;
     DateTime stamp;
     int ticks;
     CancellationTokenSource? operation;
@@ -62,6 +62,8 @@ public sealed class MainWindow : Window
     readonly TextBox clientSecret = new() { PlaceholderText = "Desktop client secret (z JSON klienta)", PasswordChar = '●' };
     readonly CheckBox readOnly = new() { Content = "Pouze čtení: neupravovat registr ani složku dokumentů" };
     readonly TabControl tabs = new();
+    // Shown only while an operation runs; it bypasses Run, which ignores clicks while busy.
+    readonly Button cancel = new() { Content = "Zrušit probíhající operaci", IsVisible = false };
     readonly Button saveDocument;
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(15) };
     public MainWindow() : this(new LocalStore()) { }
@@ -74,9 +76,10 @@ public sealed class MainWindow : Window
         Title = "SimpleDMS"; Width = 1180; Height = 840; MinWidth = 900; MinHeight = 600;
         var body = new DockPanel { Margin = new Thickness(20) };
         var header = Stack(archiveTitle, mode); header.Margin = new(0, 0, 0, 14); DockPanel.SetDock(header, Dock.Top); body.Children.Add(header);
-        // Cancel must bypass Run, which ignores clicks while an operation is busy.
-        var cancel = new Button { Content = "Zrušit probíhající operaci" }; cancel.Click += (_, _) => operation?.Cancel();
+        cancel.Click += (_, _) => operation?.Cancel();
         var bottom = Stack(status, Row(cancel)); bottom.Margin = new(0, 12, 0, 0); DockPanel.SetDock(bottom, Dock.Bottom); body.Children.Add(bottom);
+        // Messages belong to the action on the current tab; switching tabs clears them unless an operation is running.
+        tabs.SelectionChanged += (_, e) => { if (ReferenceEquals(e.Source, tabs) && !busy && !switching) status.Text = ""; };
         body.Children.Add(tabs); Content = body;
 
         syncClient.Text = OperatingSystem.IsWindows() ? "Hledám Google Drive for desktop…" : "Na Linuxu použijte Insync nebo rclone (rclone bisync / rclone mount) se složkou archivu.";
@@ -181,7 +184,7 @@ public sealed class MainWindow : Window
         // or a disconnected network disk can take a long time to answer.
         Opened += async (_, _) =>
         {
-            if (settings.Archive != null) { await LoadCatalogAsync(); if (catalog != null) tabs.SelectedIndex = 1; }
+            if (settings.Archive != null) { await LoadCatalogAsync(); if (catalog != null) ShowDocuments(); }
             if (OperatingSystem.IsWindows())
             {
                 var drive = await DetectGoogleDriveAsync();
@@ -225,12 +228,14 @@ public sealed class MainWindow : Window
     void AddTab(string title, Control content, bool scroll = true) => tabs.Items.Add(new TabItem { Header = title, Content = scroll ? new ScrollViewer { Content = content, Margin = new Thickness(10) } : new Border { Child = content, Margin = new Thickness(10) } });
     async Task Run(Func<Task> work)
     {
-        if (busy) return; busy = true; operation = new(); saveDocument.IsEnabled = false;
+        if (busy) return; busy = true; operation = new(); saveDocument.IsEnabled = false; cancel.IsVisible = true;
         try { await work(); }
         catch (OperationCanceledException) { status.Text = "Operace přerušena."; }
         catch (Exception e) { status.Text = e.Message; }
-        finally { busy = false; operation.Dispose(); operation = null; saveDocument.IsEnabled = CanWrite; }
+        finally { busy = false; operation.Dispose(); operation = null; saveDocument.IsEnabled = CanWrite; cancel.IsVisible = false; }
     }
+    // A switch made by the application keeps the message that explains it.
+    void ShowDocuments() { switching = true; tabs.SelectedIndex = 1; switching = false; }
     bool CanWrite => settings.Archive != null && catalog != null && !cached && !settings.ReadOnly;
     void InitializeServices() => auth = new(settings, new OsSecretStore(store));
     void Save()
@@ -379,7 +384,7 @@ public sealed class MainWindow : Window
         var p = await Task.Run(() => service.Open(root, choice, !settings.ReadOnly));
         if (settings.Archive?.Key == p.Key) p = p with { DriveRootId = settings.Archive.DriveRootId, AccountId = settings.Archive.AccountId, AccountEmail = settings.Archive.AccountEmail };
         else driveOnline = false;
-        SetArchive(p); await LoadCatalogAsync(); if (catalog != null) tabs.SelectedIndex = 1;
+        SetArchive(p); await LoadCatalogAsync(); if (catalog != null) ShowDocuments();
         driveUrl.Text = p.DriveRootId is { Length: > 0 } id ? "https://drive.google.com/drive/folders/" + id : "";
         status.Text = $"Archiv {p.Name} otevřen ({catalog?.Records.Count ?? 0} dokumentů).";
     }
@@ -426,7 +431,7 @@ public sealed class MainWindow : Window
         status.Text = "Ukládání dokumentu…";
         var record = await service.AddAsync(Profile(), draft, attachmentPaths, null, Progress(), Token);
         Queue(record); attachmentPaths.Clear(); UpdateFiles(); newTitle.Text = ""; newReference.Text = ""; newNotes.Text = ""; newValidity.SelectedDate = null; newPending.IsChecked = false;
-        await LoadCatalogAsync(); tabs.SelectedIndex = 1; query.Text = ""; records.SelectedItem = (records.ItemsSource as IEnumerable<DocumentRecord>)?.FirstOrDefault(x => x.Code == record.Code);
+        await LoadCatalogAsync(); ShowDocuments(); query.Text = ""; records.SelectedItem = (records.ItemsSource as IEnumerable<DocumentRecord>)?.FirstOrDefault(x => x.Code == record.Code);
         status.Text = $"Dokument {record.Code} uložen. Štítek je ve frontě." + (record.Electronic ? " Přílohy na Google Drive nahraje synchronizační klient." : "");
     }
     async Task TogglePendingAsync() { RequireWrite(); var record = Selected(); await service.SetPendingAsync(Profile(), record.Code, !record.Pending, Token); await LoadCatalogAsync(); }
