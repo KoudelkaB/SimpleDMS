@@ -76,4 +76,27 @@ public sealed class UiTests
             window.Close();
         }, CancellationToken.None);
     }
+    [Fact]
+    public async Task QueueCanBeEditedWhilePrintAwaitsConfirmation()
+    {
+        using var session = HeadlessUnitTestSession.StartNew(typeof(TestApp));
+        await session.Dispatch(() =>
+        {
+            var store = new LocalStore(Path.Combine(Path.GetTempPath(), "simpledms-ui-" + Guid.NewGuid().ToString("N")));
+            var settings = new AppSettings { LabelQueue = [new("100236", "První"), new("100246", "Druhý"), new("100247", "Třetí")] };
+            settings.PendingPrint = LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue.Take(1).ToList());
+            // A label refreshed with its Google link is a different record instance with the same Key.
+            settings.LabelQueue[1] = settings.LabelQueue[1] with { Url = "https://drive.google.com/open?id=x" };
+            store.Write("settings.json", settings);
+            var window = new MainWindow(store); window.Show();
+            var queue = window.GetLogicalDescendants().OfType<ListBox>().Single(x => x.SelectionMode == SelectionMode.Multiple);
+            void Click(string text) { window.GetLogicalDescendants().OfType<Button>().Single(b => b.Content as string == text).RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent)); WaitFor(() => true); }
+            queue.SelectedItem = queue.ItemsSource!.Cast<LabelItem>().Single(x => x.Code == "100246");
+            Click("Odebrat vybrané");
+            Assert.Equal(["100236", "100247"], store.Read<AppSettings>("settings.json")!.LabelQueue.Select(x => x.Code));
+            Click("Vyprázdnit frontu");
+            var saved = store.Read<AppSettings>("settings.json")!; Assert.Empty(saved.LabelQueue); Assert.NotNull(saved.PendingPrint);
+            window.Close();
+        }, CancellationToken.None);
+    }
 }

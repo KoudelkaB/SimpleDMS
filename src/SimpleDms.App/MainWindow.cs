@@ -49,7 +49,7 @@ public sealed class MainWindow : Window
     readonly CheckBox newPending = new() { Content = "Rozpracovaný dokument" };
     readonly ListBox filesList = new() { MinHeight = 80, MaxHeight = 200 };
     readonly List<string> attachmentPaths = [];
-    readonly ListBox queueList = new() { Height = 220 };
+    readonly ListBox queueList = new() { Height = 220, SelectionMode = SelectionMode.Multiple };
     readonly Grid labelGrid = new();
     readonly TextBlock sheetStatus = new() { TextWrapping = TextWrapping.Wrap };
     readonly Dictionary<string, TextBox> dimensions = [];
@@ -129,7 +129,7 @@ public sealed class MainWindow : Window
         });
 
         // Queue and print actions stay visible on the left; the sheet layout scrolls on the right.
-        var printPanel = Stack(Heading("Fronta štítků"), queueList, Row(Action("Odebrat vybraný", RemoveLabelAsync), Action("Vyprázdnit frontu", ClearQueueAsync)),
+        var printPanel = Stack(Heading("Fronta štítků"), queueList, Row(Action("Odebrat vybrané", RemoveLabelAsync), Action("Vyprázdnit frontu", ClearQueueAsync)),
             Heading("Tisk"), Text("Tiskárna"), Grid2(printerChoice, Action("↻", LoadPrintersAsync)),
             Row(Action("Tisknout", () => ExportAsync(true)), Action("Náhled PDF", () => ExportAsync(false))),
             Row(Action("Potvrdit výsledek tisku", () => ConfirmPrintAsync()), Action("Zrušit tiskovou úlohu", CancelPrintAsync)), sheetStatus,
@@ -482,8 +482,15 @@ public sealed class MainWindow : Window
     }
     void Queue(DocumentRecord record) { settings.LabelQueue.Add(new(record.Code, record.Title, record.DriveUrl, record.DriveId)); Save(); UpdateLabels(); }
     Task QueueSelectedAsync() { Queue(Selected()); status.Text = "Štítek přidán do fronty."; return Task.CompletedTask; }
-    Task RemoveLabelAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); if (queueList.SelectedItem is LabelItem item) settings.LabelQueue.Remove(item); Save(); UpdateLabels(); return Task.CompletedTask; }
-    Task ClearQueueAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); settings.LabelQueue.Clear(); Save(); UpdateLabels(); return Task.CompletedTask; }
+    // A job awaiting confirmation keeps its own copy of the labels, so the queue can change meanwhile.
+    // Labels are matched by Key: a label refreshed with its Google link is a new record instance.
+    Task RemoveLabelAsync()
+    {
+        var keys = queueList.SelectedItems?.OfType<LabelItem>().Select(x => x.Key).ToHashSet() ?? [];
+        if (keys.Count == 0) throw new InvalidOperationException("Vyberte ve frontě štítky k odebrání (více štítků s klávesou Ctrl).");
+        settings.LabelQueue.RemoveAll(x => keys.Contains(x.Key)); Save(); UpdateLabels(); status.Text = $"Odebráno {keys.Count} štítků z fronty."; return Task.CompletedTask;
+    }
+    Task ClearQueueAsync() { var count = settings.LabelQueue.Count; settings.LabelQueue.Clear(); Save(); UpdateLabels(); status.Text = $"Fronta vyprázdněna ({count} štítků)."; return Task.CompletedTask; }
     async Task LoadPrintersAsync()
     {
         var printers = await Task.Run(LabelPrinter.List); var fallback = await Task.Run(LabelPrinter.Default);
@@ -528,6 +535,7 @@ public sealed class MainWindow : Window
         // Google IDs may have been filled since the label was queued; use the current link for the QR code.
         var current = catalog?.Records.ToDictionary(r => r.Code) ?? [];
         settings.LabelQueue = settings.LabelQueue.Select(l => l.Url.Length == 0 && current.GetValueOrDefault(l.Code) is { DriveUrl.Length: > 0 } r ? l with { Url = r.DriveUrl, Id = r.DriveId } : l).ToList();
+        Save(); UpdateLabels();
         var plan = LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue);
         var withoutLink = settings.Labels.Qr ? plan.Placements.Count(x => x.Label.Url.Length == 0) : 0;
         var note = withoutLink > 0 ? $" {withoutLink} štítků zatím nemá Google ID, jejich QR obsahuje evidenční číslo." : "";
