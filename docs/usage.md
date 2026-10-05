@@ -71,13 +71,13 @@ kalibrační posuny v milimetrech a uložte profil. Kliknutím na pozici vyberte
 začátek; zaškrtněte již použité nebo chybějící nálepky. Evidované archy lze
 vybírat opakovaně i po restartu.
 
-Náhled PDF ani odeslání do tiskárny nálepky samo nespotřebuje. Hned po
-tisku se zobrazí dotaz se všemi štítky předvybranými: povedený tisk potvrdíte
+Náhled PDF jen zobrazí aktuální frontu a nic nemění. Tisknout vždy tiskne
+celou aktuální frontu; hned po tisku se zobrazí dotaz se všemi štítky předvybranými: povedený tisk potvrdíte
 jedním tlačítkem (nebo Enter). Nepovedené štítky odškrtněte a zvolte
 **Uložit jen zaškrtnuté**; zůstanou ve frontě a jejich pozice volné.
 **Nic se nevytisklo** tiskovou úlohu zruší. **Rozhodnu později** ji ponechá
-a výsledek potvrdíte tlačítkem **Potvrdit výsledek tisku** (také po tisku
-z náhledu PDF). Větší dávka pokračuje na dalších arších.
+a výsledek potvrdíte tlačítkem **Potvrdit výsledek tisku**, případně se na
+něj aplikace zeptá před dalším tiskem. Větší dávka pokračuje na dalších arších.
 
 Na Windows aplikace tiskne přímo na vybranou tiskárnu v měřítku 100 %
 a zkontroluje, že formát papíru tiskárny odpovídá profilu archu. Linux

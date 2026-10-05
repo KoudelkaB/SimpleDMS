@@ -129,7 +129,7 @@ public sealed class MainWindow : Window
         var printPanel = Stack(Heading("Fronta štítků"), queueList, Row(Action("Odebrat vybraný", RemoveLabelAsync), Action("Vyprázdnit frontu", ClearQueueAsync)),
             Heading("Tisk"), Text("Tiskárna"), Grid2(printerChoice, Action("↻", LoadPrintersAsync)),
             Row(Action("Tisknout", () => ExportAsync(true)), Action("Náhled PDF", () => ExportAsync(false))),
-            Row(Action("Potvrdit výsledek tisku", ConfirmPrintAsync), Action("Zrušit tiskovou úlohu", CancelPrintAsync)), sheetStatus,
+            Row(Action("Potvrdit výsledek tisku", () => ConfirmPrintAsync()), Action("Zrušit tiskovou úlohu", CancelPrintAsync)), sheetStatus,
             Text("Pozice na archu se spotřebují až po potvrzení výsledku tisku. Náhled ani odeslání do tiskárny arch neposouvají. Tiskněte v měřítku 100 %."));
         printPanel.Margin = new(0, 0, 18, 0);
         var sheetPanel = Stack(Heading("Arch nálepek"), Row(profileChoice, sheetChoice), profileName);
@@ -485,30 +485,35 @@ public sealed class MainWindow : Window
         var next = s.Next(p); sheetStatus.Text = $"Arch {s.Id[..6]} · použito {s.Used.Count}/{p.Capacity} · " + (next == p.Capacity ? "plný" : $"další pozice {next / p.Columns + 1}:{next % p.Columns + 1}") + $" · fronta {settings.LabelQueue.Count}" + (settings.PendingPrint != null ? " · čeká potvrzení tisku" : "");
         if (updateSheets) { filling = true; var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == p.Key).Select(x => new SheetOption(x, p.Capacity)).ToList(); sheetChoice.ItemsSource = sheets; sheetChoice.SelectedItem = sheets.FirstOrDefault(x => x.Sheet.Id == s.Id); filling = false; }
     }
+    // The preview only renders the current queue. Printing always plans the current queue and records the job
+    // for confirmation only once it has been handed to the printer, so a stale job can never be printed instead.
     async Task ExportAsync(bool print)
     {
-        if (settings.PendingPrint == null)
+        if (print && settings.PendingPrint != null)
         {
-            // Google IDs may have been filled since the label was queued; use the current link for the QR code.
-            var current = catalog?.Records.ToDictionary(r => r.Code) ?? [];
-            settings.LabelQueue = settings.LabelQueue.Select(l => l.Url.Length == 0 && current.GetValueOrDefault(l.Code) is { DriveUrl.Length: > 0 } r ? l with { Url = r.DriveUrl, Id = r.DriveId } : l).ToList();
-            settings.PendingPrint = LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue);
+            await ConfirmPrintAsync("Předchozí tisk ještě nebyl potvrzen. Vytiskly se tyto štítky?");
+            if (settings.PendingPrint != null) { status.Text = "Nejprve potvrďte nebo zrušte předchozí tiskovou úlohu."; return; }
         }
-        Save(); UpdateLabels();
-        var withoutLink = settings.Labels.Qr ? settings.PendingPrint.Placements.Count(x => x.Label.Url.Length == 0) : 0;
+        // Google IDs may have been filled since the label was queued; use the current link for the QR code.
+        var current = catalog?.Records.ToDictionary(r => r.Code) ?? [];
+        settings.LabelQueue = settings.LabelQueue.Select(l => l.Url.Length == 0 && current.GetValueOrDefault(l.Code) is { DriveUrl.Length: > 0 } r ? l with { Url = r.DriveUrl, Id = r.DriveId } : l).ToList();
+        var plan = LabelPlanner.Plan(settings.Labels, settings.Sheet, settings.LabelQueue);
+        var withoutLink = settings.Labels.Qr ? plan.Placements.Count(x => x.Label.Url.Length == 0) : 0;
         var note = withoutLink > 0 ? $" {withoutLink} štítků zatím nemá Google ID, jejich QR obsahuje evidenční číslo." : "";
         if (print)
         {
-            status.Text = "Tisk…"; status.Text = await LabelPrinter.PrintAsync(settings.Labels, settings.PendingPrint, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + note;
+            status.Text = "Tisk…";
+            var result = await LabelPrinter.PrintAsync(settings.Labels, plan, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token);
+            settings.PendingPrint = plan; Save(); UpdateLabels(); status.Text = result + note;
             await ConfirmPrintAsync(); return;
         }
-        var folder = Path.Combine(store.Root, "labels"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, settings.PendingPrint.Id + ".pdf");
-        LabelPdf.Export(path, settings.Labels, settings.PendingPrint);
-        GoogleAuth.OpenBrowser(path); status.Text = "PDF otevřeno. Při tisku z PDF zvolte měřítko 100 %, bez přizpůsobení na stránku. Potom potvrďte výsledek." + note;
+        var folder = Path.Combine(store.Root, "labels"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, plan.Id + ".pdf");
+        LabelPdf.Export(path, settings.Labels, plan);
+        GoogleAuth.OpenBrowser(path); status.Text = "Náhled otevřen. Tiskněte tlačítkem Tisknout; náhled arch ani frontu nemění." + note;
     }
     enum PrintOutcome { Later, All, Selection, Nothing }
     // Opens right after printing with every label preselected, so a successful print takes one click (or Enter).
-    async Task ConfirmPrintAsync()
+    async Task ConfirmPrintAsync(string question = "Vytiskly se všechny štítky správně?")
     {
         var plan = settings.PendingPrint ?? throw new InvalidOperationException("Není připravena tisková úloha.");
         var columns = settings.Labels.Columns;
@@ -525,7 +530,7 @@ public sealed class MainWindow : Window
         var later = Choice("Rozhodnu později", PrintOutcome.Later); later.IsCancel = true;
         // Unticking a label means a partial result, so Enter then saves the selection instead of "all".
         foreach (var box in picks.Values) box.IsCheckedChanged += (_, _) => { var complete = picks.Values.All(x => x.IsChecked == true); all.IsDefault = complete; selection.IsDefault = !complete; };
-        var header = Stack(Heading("Vytiskly se všechny štítky správně?"), Text("Pokud se některé nepovedly, zrušte u nich zaškrtnutí a zvolte Uložit jen zaškrtnuté. Nevytištěné štítky zůstanou ve frontě a jejich pozice na archu volné."));
+        var header = Stack(Heading(question), Text("Pokud se některé nepovedly, zrušte u nich zaškrtnutí a zvolte Uložit jen zaškrtnuté. Nevytištěné štítky zůstanou ve frontě a jejich pozice na archu volné."));
         var buttons = new WrapPanel(); foreach (var b in new[] { all, selection, Choice("Nic se nevytisklo", PrintOutcome.Nothing), later }) { b.Margin = new(0, 8, 8, 0); buttons.Children.Add(b); }
         var layout = new DockPanel { Margin = new Thickness(20) };
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header); DockPanel.SetDock(buttons, Dock.Bottom); layout.Children.Add(buttons);
