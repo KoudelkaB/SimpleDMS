@@ -71,13 +71,14 @@ kalibrační posuny v milimetrech a uložte profil. Kliknutím na pozici vyberte
 začátek; zaškrtněte již použité nebo chybějící nálepky. Evidované archy lze
 vybírat opakovaně i po restartu.
 
-Náhled PDF jen zobrazí aktuální frontu a nic nemění. Tisknout vždy tiskne
-celou aktuální frontu; hned po tisku se zobrazí dotaz se všemi štítky předvybranými: povedený tisk potvrdíte
-jedním tlačítkem (nebo Enter). Nepovedené štítky odškrtněte a zvolte
-**Uložit jen zaškrtnuté**; zůstanou ve frontě a jejich pozice volné.
-**Nic se nevytisklo** tiskovou úlohu zruší. **Rozhodnu později** ji ponechá
-a výsledek potvrdíte tlačítkem **Potvrdit výsledek tisku**, případně se na
-něj aplikace zeptá před dalším tiskem. Větší dávka pokračuje na dalších arších.
+Fronta je jediný stav tisku: Náhled PDF i Tisknout ukazují a tisknou přesně
+štítky ve frontě a samy nic nemění. Hned po tisku se zobrazí dotaz se všemi
+štítky předvybranými: povedený tisk potvrdíte jedním tlačítkem (nebo Enter).
+Nepovedené štítky odškrtněte a zvolte **Uložit jen zaškrtnuté**. Teprve
+potvrzené štítky z fronty odejdou a jejich pozice na archu se označí jako
+použité; ostatní zůstanou ve frontě. **Nic se nevytisklo** frontu i arch
+ponechá beze změny. Dotaz vyžaduje odpověď, aby fronta odpovídala papíru.
+Větší dávka pokračuje na dalších arších.
 
 Na Windows aplikace tiskne přímo na vybranou tiskárnu v měřítku 100 %
 a zkontroluje, že formát papíru tiskárny odpovídá profilu archu. Linux

@@ -51,11 +51,9 @@ public sealed class AppSettings
     public LabelProfile Labels { get; set; } = new();
     public LabelSheet Sheet { get; set; } = new();
     public List<LabelItem> LabelQueue { get; set; } = [];
-    public PrintPlan? PendingPrint { get; set; }
     public Dictionary<string, LabelProfile> LabelProfiles { get; set; } = [];
     public Dictionary<string, LabelSheet> LabelSheets { get; set; } = [];
     public Dictionary<string, List<LabelItem>> ArchiveLabelQueues { get; set; } = [];
-    public Dictionary<string, PrintPlan?> ArchivePrintPlans { get; set; } = [];
 }
 public sealed record LabelItem(string Code, string Title, string Url = "", string Id = "")
 {

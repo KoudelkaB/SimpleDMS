@@ -83,8 +83,8 @@ public sealed class CoreTests
     public void InvalidGridAndMismatchedPrintPlanAreRejected()
     { var p = new LabelProfile { Columns = 10 }; Assert.Throws<InvalidOperationException>(p.Validate); p = new(); var sheet = new LabelSheet(); var plan = LabelPlanner.Plan(p, sheet, [new("100001", "")]); Assert.Throws<InvalidOperationException>(() => LabelPlanner.Confirm(p, new(), plan, plan.Placements, [])); }
     [Fact]
-    public void SettingsPersistPaperPositionAndPendingPrint()
-    { var path = Path.Combine(Path.GetTempPath(), "simpledms-store-" + Guid.NewGuid().ToString("N")); var s = new LocalStore(path); var settings = new AppSettings(); settings.Sheet.Start = 5; settings.Sheet.Used = [0, 1]; settings.PendingPrint = LabelPlanner.Plan(settings.Labels, settings.Sheet, [new("100001", "Test")]); s.Write("settings.json", settings); var loaded = s.Read<AppSettings>("settings.json")!; Assert.Equal(5, loaded.Sheet.Start); Assert.Equal(2, loaded.Sheet.Used.Count); Assert.NotNull(loaded.PendingPrint); }
+    public void SettingsPersistPaperPositionAndQueue()
+    { var path = Path.Combine(Path.GetTempPath(), "simpledms-store-" + Guid.NewGuid().ToString("N")); var s = new LocalStore(path); var settings = new AppSettings(); settings.Sheet.Start = 5; settings.Sheet.Used = [0, 1]; settings.LabelQueue = [new("100001", "Test")]; s.Write("settings.json", settings); var loaded = s.Read<AppSettings>("settings.json")!; Assert.Equal(5, loaded.Sheet.Start); Assert.Equal(2, loaded.Sheet.Used.Count); Assert.Equal(settings.LabelQueue[0].Key, Assert.Single(loaded.LabelQueue).Key); }
     [Fact]
     public void ReferenceWorkbookImportAndWriteKeepSourceUnchanged()
     {

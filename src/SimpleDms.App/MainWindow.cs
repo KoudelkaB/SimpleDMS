@@ -132,8 +132,8 @@ public sealed class MainWindow : Window
         var printPanel = Stack(Heading("Fronta štítků"), queueList, Row(Action("Odebrat vybrané", RemoveLabelAsync), Action("Vyprázdnit frontu", ClearQueueAsync)),
             Heading("Tisk"), Text("Tiskárna"), Grid2(printerChoice, Action("↻", LoadPrintersAsync)),
             Row(Action("Tisknout", () => ExportAsync(true)), Action("Náhled PDF", () => ExportAsync(false))),
-            Row(Action("Potvrdit výsledek tisku", () => ConfirmPrintAsync()), Action("Zrušit tiskovou úlohu", CancelPrintAsync)), sheetStatus,
-            Text("Pozice na archu se spotřebují až po potvrzení výsledku tisku. Náhled ani odeslání do tiskárny arch neposouvají. Tiskněte v měřítku 100 %."));
+            sheetStatus,
+            Text("Náhled i tisk ukazují přesně frontu. Štítky z ní odejdou a pozice na archu se spotřebují, až po tisku potvrdíte, co se vytisklo. Tiskněte v měřítku 100 %."));
         printPanel.Margin = new(0, 0, 18, 0);
         var sheetPanel = Stack(Heading("Arch nálepek"), Row(profileChoice, sheetChoice), profileName);
         var inputs = new Grid { ColumnDefinitions = new("*,*,*,*"), RowDefinitions = new("Auto,Auto,Auto") };
@@ -149,7 +149,7 @@ public sealed class MainWindow : Window
 
         clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; readOnly.IsChecked = settings.ReadOnly;
         readOnly.IsCheckedChanged += (_, _) => { settings.ReadOnly = readOnly.IsChecked == true; Save(); UpdateArchive(); };
-        // QR is not part of the sheet geometry, so it applies at once (also to a prepared print job) without saving the profile.
+        // QR is not part of the sheet geometry, so it applies at once without saving the profile.
         includeQr.IsCheckedChanged += (_, _) => { var qr = includeQr.IsChecked == true; if (settings.Labels.Qr == qr) return; settings.Labels.Qr = qr; if (settings.LabelProfiles.TryGetValue(settings.Labels.Name, out var stored)) stored.Qr = qr; Save(); };
         AddTab("Nastavení", Stack(Heading("Režim"), readOnly,
             Heading("Google OAuth klient (jen pro volitelné Google ID)"), Text("Běžný uživatel používá OAuth klienta dodaného vydavatelem. Toto nastavení slouží pro vlastní sestavení nebo první konfiguraci správce."), clientId, clientSecret,
@@ -169,8 +169,8 @@ public sealed class MainWindow : Window
             var stateText = new TextBlock { Text = r.State, [Grid.ColumnProperty] = 3 }; if (r.Pending) stateText.Foreground = Brushes.DarkOrange; row.Children.Add(stateText);
             return row;
         });
-        profileChoice.SelectionChanged += (_, _) => { if (!filling && profileChoice.SelectedItem is string name && settings.LabelProfiles.TryGetValue(name, out var p) && settings.PendingPrint == null) { settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(s => s.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; FillProfile(); UpdateLabels(); Save(); } };
-        sheetChoice.SelectionChanged += (_, _) => { if (!filling && sheetChoice.SelectedItem is SheetOption s && settings.PendingPrint == null) { settings.Sheet = s.Sheet; UpdateLabels(false); Save(); } };
+        profileChoice.SelectionChanged += (_, _) => { if (!filling && profileChoice.SelectedItem is string name && settings.LabelProfiles.TryGetValue(name, out var p)) { settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(s => s.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; FillProfile(); UpdateLabels(); Save(); } };
+        sheetChoice.SelectionChanged += (_, _) => { if (!filling && sheetChoice.SelectedItem is SheetOption s) { settings.Sheet = s.Sheet; UpdateLabels(false); Save(); } };
         if (settings.LabelProfiles.Count == 0) settings.LabelProfiles[settings.Labels.Name] = settings.Labels;
         FillProfile(); UpdateLabels();
         if (settings.Archive != null)
@@ -240,12 +240,12 @@ public sealed class MainWindow : Window
     void InitializeServices() => auth = new(settings, new OsSecretStore(store));
     void Save()
     {
-        if (settings.Archive != null) { settings.ArchiveLabelQueues[settings.Archive.Key] = settings.LabelQueue; settings.ArchivePrintPlans[settings.Archive.Key] = settings.PendingPrint; }
+        if (settings.Archive != null) settings.ArchiveLabelQueues[settings.Archive.Key] = settings.LabelQueue;
         settings.Sheet.ProfileKey = settings.Labels.Key; settings.LabelSheets[settings.Sheet.Id] = settings.Sheet; store.Write("settings.json", settings);
     }
     void SetArchive(ArchiveProfile p)
     {
-        Save(); settings.Archive = p; settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; settings.PendingPrint = settings.ArchivePrintPlans.GetValueOrDefault(p.Key); Save(); UpdateLabels();
+        Save(); settings.Archive = p; settings.LabelQueue = settings.ArchiveLabelQueues.GetValueOrDefault(p.Key) ?? []; Save(); UpdateLabels();
     }
     // Runs a file-system probe in the background; a drive that does not answer counts as unavailable.
     static async Task<T?> Probe<T>(Func<T> work, int seconds = 5)
@@ -482,7 +482,6 @@ public sealed class MainWindow : Window
     }
     void Queue(DocumentRecord record) { settings.LabelQueue.Add(new(record.Code, record.Title, record.DriveUrl, record.DriveId)); Save(); UpdateLabels(); }
     Task QueueSelectedAsync() { Queue(Selected()); status.Text = "Štítek přidán do fronty."; return Task.CompletedTask; }
-    // A job awaiting confirmation keeps its own copy of the labels, so the queue can change meanwhile.
     // Labels are matched by Key: a label refreshed with its Google link is a new record instance.
     Task RemoveLabelAsync()
     {
@@ -501,37 +500,31 @@ public sealed class MainWindow : Window
     void FillProfile() { var p = settings.Labels; profileName.Text = p.Name; includeQr.IsChecked = p.Qr; foreach (var x in dimensions) x.Value.Text = typeof(LabelProfile).GetProperty(x.Key)!.GetValue(p)!.ToString(); filling = true; profileChoice.ItemsSource = settings.LabelProfiles.Keys.ToList(); profileChoice.SelectedItem = p.Name; filling = false; }
     Task SaveProfileAsync()
     {
-        if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu.");
         var p = new LabelProfile { Name = profileName.Text ?? "Arch", Qr = includeQr.IsChecked == true }; foreach (var x in dimensions) { var prop = typeof(LabelProfile).GetProperty(x.Key)!; var value = float.Parse((x.Value.Text ?? "").Replace(',', '.'), CultureInfo.InvariantCulture); prop.SetValue(p, prop.PropertyType == typeof(int) ? (object)checked((int)value) : value); }
         p.Validate(); settings.LabelProfiles[p.Name] = p; settings.Labels = p; settings.Sheet = settings.LabelSheets.Values.LastOrDefault(x => x.ProfileKey == p.Key) ?? new() { ProfileKey = p.Key }; Save(); FillProfile(); UpdateLabels(); status.Text = "Profil archu uložen. Rozměry ověřte zkušebním tiskem v měřítku 100 %."; return Task.CompletedTask;
     }
-    Task NewSheetAsync() { if (settings.PendingPrint != null) throw new InvalidOperationException("Nejprve potvrďte nebo zrušte tiskovou úlohu."); settings.Sheet = new() { ProfileKey = settings.Labels.Key }; Save(); UpdateLabels(); return Task.CompletedTask; }
+    Task NewSheetAsync() { settings.Sheet = new() { ProfileKey = settings.Labels.Key }; Save(); UpdateLabels(); return Task.CompletedTask; }
     void UpdateLabels(bool updateSheets = true)
     {
         queueList.ItemsSource = settings.LabelQueue.ToList(); var p = settings.Labels; var s = settings.Sheet; labelGrid.Children.Clear(); labelGrid.RowDefinitions.Clear(); labelGrid.ColumnDefinitions.Clear();
         for (int i = 0; i < p.Rows; i++) labelGrid.RowDefinitions.Add(new(GridLength.Auto)); for (int i = 0; i < p.Columns; i++) labelGrid.ColumnDefinitions.Add(new(GridLength.Star));
-        PrintPlan? plan = settings.PendingPrint;
-        if (plan == null && settings.LabelQueue.Count > 0) { try { plan = LabelPlanner.Plan(p, s, settings.LabelQueue); } catch (InvalidOperationException) { } }
+        PrintPlan? plan = null;
+        if (settings.LabelQueue.Count > 0) { try { plan = LabelPlanner.Plan(p, s, settings.LabelQueue); } catch (InvalidOperationException) { } }
         var first = plan?.Pages[0].Placements.ToDictionary(x => x.Position, x => x.Label.Code) ?? [];
         for (int i = 0; i < p.Capacity; i++)
         {
-            int index = i; var used = new CheckBox { Content = "Použito", IsChecked = s.Used.Contains(i), IsEnabled = settings.PendingPrint == null };
+            int index = i; var used = new CheckBox { Content = "Použito", IsChecked = s.Used.Contains(i) };
             used.IsCheckedChanged += (_, _) => { if (used.IsChecked == true) s.Used.Add(index); else s.Used.Remove(index); Save(); UpdateLabels(); };
-            var button = new Button { Content = $"{i / p.Columns + 1}:{i % p.Columns + 1}" + (first.TryGetValue(i, out var code) ? "  " + code : ""), HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = settings.PendingPrint == null };
+            var button = new Button { Content = $"{i / p.Columns + 1}:{i % p.Columns + 1}" + (first.TryGetValue(i, out var code) ? "  " + code : ""), HorizontalAlignment = HorizontalAlignment.Stretch };
             button.Click += (_, _) => { s.Start = index; Save(); UpdateLabels(); }; var cell = Stack(button, used); cell.Margin = new(2); Grid.SetRow(cell, i / p.Columns); Grid.SetColumn(cell, i % p.Columns); labelGrid.Children.Add(cell);
         }
-        var next = s.Next(p); sheetStatus.Text = $"Arch {s.Id[..6]} · použito {s.Used.Count}/{p.Capacity} · " + (next == p.Capacity ? "plný" : $"další pozice {next / p.Columns + 1}:{next % p.Columns + 1}") + $" · fronta {settings.LabelQueue.Count}" + (settings.PendingPrint != null ? " · čeká potvrzení tisku" : "");
+        var next = s.Next(p); sheetStatus.Text = $"Arch {s.Id[..6]} · použito {s.Used.Count}/{p.Capacity} · " + (next == p.Capacity ? "plný" : $"další pozice {next / p.Columns + 1}:{next % p.Columns + 1}") + $" · fronta {settings.LabelQueue.Count}";
         if (updateSheets) { filling = true; var sheets = settings.LabelSheets.Values.Where(x => x.ProfileKey == p.Key).Select(x => new SheetOption(x, p.Capacity)).ToList(); sheetChoice.ItemsSource = sheets; sheetChoice.SelectedItem = sheets.FirstOrDefault(x => x.Sheet.Id == s.Id); filling = false; }
     }
-    // The preview only renders the current queue. Printing always plans the current queue and records the job
-    // for confirmation only once it has been handed to the printer, so a stale job can never be printed instead.
+    // The queue is the only state: preview and print always show exactly the queue, and labels leave it
+    // (and consume sheet positions) only when the result of the print is confirmed right afterwards.
     async Task ExportAsync(bool print)
     {
-        if (print && settings.PendingPrint != null)
-        {
-            await ConfirmPrintAsync("Předchozí tisk ještě nebyl potvrzen. Vytiskly se tyto štítky?");
-            if (settings.PendingPrint != null) { status.Text = "Nejprve potvrďte nebo zrušte předchozí tiskovou úlohu."; return; }
-        }
         // Google IDs may have been filled since the label was queued; use the current link for the QR code.
         var current = catalog?.Records.ToDictionary(r => r.Code) ?? [];
         settings.LabelQueue = settings.LabelQueue.Select(l => l.Url.Length == 0 && current.GetValueOrDefault(l.Code) is { DriveUrl.Length: > 0 } r ? l with { Url = r.DriveUrl, Id = r.DriveId } : l).ToList();
@@ -542,50 +535,47 @@ public sealed class MainWindow : Window
         if (print)
         {
             status.Text = "Tisk…";
-            var result = await LabelPrinter.PrintAsync(settings.Labels, plan, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token);
-            settings.PendingPrint = plan; Save(); UpdateLabels(); status.Text = result + note;
-            await ConfirmPrintAsync(); return;
+            status.Text = await LabelPrinter.PrintAsync(settings.Labels, plan, printerChoice.SelectedItem as string, Path.Combine(store.Root, "labels"), Token) + note;
+            await ConfirmPrintAsync(plan); return;
         }
         var folder = Path.Combine(store.Root, "labels"); Directory.CreateDirectory(folder); var path = Path.Combine(folder, plan.Id + ".pdf");
         LabelPdf.Export(path, settings.Labels, plan);
         GoogleAuth.OpenBrowser(path); status.Text = "Náhled otevřen. Tiskněte tlačítkem Tisknout; náhled arch ani frontu nemění." + note;
     }
-    enum PrintOutcome { Later, All, Selection, Nothing }
+    enum PrintOutcome { Nothing, All, Selection }
     // Opens right after printing with every label preselected, so a successful print takes one click (or Enter).
-    async Task ConfirmPrintAsync(string question = "Vytiskly se všechny štítky správně?")
+    // It needs an answer: without it the queue and the sheet would no longer match the paper.
+    async Task ConfirmPrintAsync(PrintPlan plan)
     {
-        var plan = settings.PendingPrint ?? throw new InvalidOperationException("Není připravena tisková úloha.");
         var columns = settings.Labels.Columns;
         var picks = plan.Placements.ToDictionary(x => x, x => new CheckBox
         {
             IsChecked = true,
             Content = (plan.Pages.Count > 1 ? $"Arch {x.Page + 1}, " : "") + $"pozice {x.Position / columns + 1}:{x.Position % columns + 1} — {x.Label.Code} {x.Label.Title}"
         });
-        var outcome = PrintOutcome.Later;
+        var outcome = PrintOutcome.Nothing; var answered = false;
         var dialog = new Window { Title = "Výsledek tisku", Width = 640, Height = 480, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        Button Choice(string text, PrintOutcome value) { var b = new Button { Content = text }; b.Click += (_, _) => { outcome = value; dialog.Close(); }; return b; }
+        dialog.Closing += (_, e) => { if (!answered && !e.IsProgrammatic && e.CloseReason == WindowCloseReason.WindowClosing) e.Cancel = true; };
+        Button Choice(string text, PrintOutcome value) { var b = new Button { Content = text }; b.Click += (_, _) => { outcome = value; answered = true; dialog.Close(); }; return b; }
         var all = Choice($"Ano, vytisklo se vše ({picks.Count})", PrintOutcome.All); all.Classes.Add("accent"); all.IsDefault = true;
         var selection = Choice("Uložit jen zaškrtnuté", PrintOutcome.Selection);
-        var later = Choice("Rozhodnu později", PrintOutcome.Later); later.IsCancel = true;
         // Unticking a label means a partial result, so Enter then saves the selection instead of "all".
         foreach (var box in picks.Values) box.IsCheckedChanged += (_, _) => { var complete = picks.Values.All(x => x.IsChecked == true); all.IsDefault = complete; selection.IsDefault = !complete; };
-        var header = Stack(Heading(question), Text("Pokud se některé nepovedly, zrušte u nich zaškrtnutí a zvolte Uložit jen zaškrtnuté. Nevytištěné štítky zůstanou ve frontě a jejich pozice na archu volné."));
-        var buttons = new WrapPanel(); foreach (var b in new[] { all, selection, Choice("Nic se nevytisklo", PrintOutcome.Nothing), later }) { b.Margin = new(0, 8, 8, 0); buttons.Children.Add(b); }
+        var header = Stack(Heading("Vytiskly se všechny štítky správně?"), Text("Pokud se některé nepovedly, zrušte u nich zaškrtnutí a zvolte Uložit jen zaškrtnuté. Nevytištěné štítky zůstanou ve frontě a jejich pozice na archu volné."));
+        var buttons = new WrapPanel(); foreach (var b in new[] { all, selection, Choice("Nic se nevytisklo", PrintOutcome.Nothing) }) { b.Margin = new(0, 8, 8, 0); buttons.Children.Add(b); }
         var layout = new DockPanel { Margin = new Thickness(20) };
         DockPanel.SetDock(header, Dock.Top); layout.Children.Add(header); DockPanel.SetDock(buttons, Dock.Bottom); layout.Children.Add(buttons);
         layout.Children.Add(new ScrollViewer { Content = Stack([.. picks.Values]), Margin = new(0, 8) });
         dialog.Content = layout;
         await dialog.ShowDialog(this);
-        if (outcome == PrintOutcome.Later) { status.Text = "Výsledek tisku můžete potvrdit později tlačítkem Potvrdit výsledek tisku."; return; }
-        if (outcome == PrintOutcome.Nothing) { await CancelPrintAsync(); status.Text = "Nic nebylo vytištěno. Štítky zůstávají ve frontě, pozice archu jsou volné."; return; }
+        if (outcome == PrintOutcome.Nothing) { status.Text = "Nic nebylo vytištěno. Štítky zůstávají ve frontě, pozice archu jsou volné."; return; }
         var confirmed = outcome == PrintOutcome.All ? plan.Placements.ToList() : picks.Where(x => x.Value.IsChecked == true).Select(x => x.Key).ToList();
         var result = LabelPlanner.Confirm(settings.Labels, settings.Sheet, plan, confirmed, settings.LabelQueue);
         foreach (var page in plan.Pages.Select((p, i) => (Page: p, Index: i)))
         { var sheet = settings.LabelSheets.GetValueOrDefault(page.Page.SheetId) ?? new() { Id = page.Page.SheetId, ProfileKey = plan.ProfileKey }; foreach (var p in confirmed.Where(x => x.Page == page.Index)) sheet.Used.Add(p.Position); settings.LabelSheets[sheet.Id] = sheet; }
-        settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; settings.PendingPrint = null; Save(); UpdateLabels();
+        settings.Sheet = result.Sheet; settings.LabelQueue = result.Queue; Save(); UpdateLabels();
         status.Text = $"Potvrzeno {confirmed.Count} z {plan.Placements.Count} štítků." + (result.Queue.Count > 0 ? $" Ve frontě zůstává {result.Queue.Count}." : "");
     }
-    Task CancelPrintAsync() { settings.PendingPrint = null; Save(); UpdateLabels(); status.Text = "Tisková úloha zrušena; pozice archu zůstaly zachované."; return Task.CompletedTask; }
     void ImportOAuth(string json) { var root = JsonDocument.Parse(json).RootElement; var item = root.TryGetProperty("installed", out var installed) ? installed : root; settings.ClientId = item.GetProperty("client_id").GetString() ?? ""; settings.ClientSecret = item.TryGetProperty("client_secret", out var s) ? s.GetString() ?? "" : ""; }
     async Task ImportOAuthAsync() { var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Google OAuth desktop client JSON", AllowMultiple = false }); if (files.Count == 0) return; var path = files[0].TryGetLocalPath() ?? throw new InvalidOperationException("Vyberte místní JSON."); ImportOAuth(await File.ReadAllTextAsync(path, Token)); clientId.Text = settings.ClientId; clientSecret.Text = settings.ClientSecret; Save(); InitializeServices(); driveOnline = false; UpdateArchive(); status.Text = "OAuth klient nastaven. Propojení s Google Drive obnovíte na kartě Archiv."; }
     Task SaveOAuthAsync() { settings.ClientId = clientId.Text?.Trim() ?? ""; settings.ClientSecret = clientSecret.Text?.Trim() ?? ""; Save(); InitializeServices(); driveOnline = false; UpdateArchive(); status.Text = "Google nastavení uloženo. Propojení s Google Drive obnovíte na kartě Archiv."; return Task.CompletedTask; }
